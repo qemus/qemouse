@@ -245,6 +245,7 @@ jobs:
             meson \
             ninja-build \
             pkg-config \
+            python3 \
             xz-utils
       -
         name: Retrieve libudfread source
@@ -418,9 +419,9 @@ jobs:
           test -f \
             "/usr/share/doc/udfread/libudfread-$VERSION-source.tar.xz"
 
-          ./tests/create-fixture.py
+          python3 ./tests/create-fixture.py
           git diff --exit-code -- tests
-          ./tests/test.sh /usr/bin/udfread
+          bash ./tests/test.sh /usr/bin/udfread
       -
         name: Upload Debian package
         uses: actions/upload-artifact@v7
