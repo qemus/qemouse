@@ -2,170 +2,509 @@ name: Build
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: "17 4 * * *"
 
 concurrency:
   group: build
   cancel-in-progress: false
 
-env:
-  VERSION: "${{ vars.MAJOR }}.${{ vars.MINOR }}"
-  TAG: "v${{ vars.MAJOR }}.${{ vars.MINOR }}"
-
 jobs:
-  build:
-    name: Build ${{ matrix.architecture }}
-    runs-on: ${{ matrix.runner }}
+  detect:
+    name: Detect upstream release
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
+    outputs:
+      exists: ${{ steps.status.outputs.exists }}
+      latest_branch: ${{ steps.upstream.outputs.latest_branch }}
+      latest_version: ${{ steps.upstream.outputs.latest_version }}
+      previous_branch: ${{ steps.upstream.outputs.previous_branch }}
+    steps:
+      -
+        name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      -
+        name: Retrieve latest tag
+        id: upstream
+        run: |
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+
+          repository="https://code.videolan.org/videolan/libudfread.git"
+
+          refs=$(
+            git ls-remote \
+              --tags \
+              --refs \
+              --sort="v:refname" \
+              "$repository"
+          )
+
+          mapfile -t branches < <(
+            sed 's|.*/||' <<< "$refs" |
+              grep -E '^v?[0-9]+(\.[0-9]+){1,2}$'
+          )
+
+          count=${#branches[@]}
+
+          if [ "$count" -eq 0 ]; then
+            echo "ERROR: No stable upstream tags were found." >&2
+            exit 1
+          fi
+
+          latest_index=$((count - 1))
+          latest_branch=${branches[$latest_index]}
+          latest_version=${latest_branch#v}
+          previous_branch=""
+
+          if [ "$count" -gt 1 ]; then
+            previous_index=$((count - 2))
+            previous_branch=${branches[$previous_index]}
+          fi
+
+          if [ -z "$latest_version" ]; then
+            echo "ERROR: Upstream version not found." >&2
+            exit 1
+          fi
+
+          echo "Found version: \"$latest_version\""
+          echo "Upstream tag: \"$latest_branch\""
+
+          if [ -n "$previous_branch" ]; then
+            echo "Previous upstream tag: \"$previous_branch\""
+          fi
+
+          {
+            echo "latest_branch=$latest_branch"
+            echo "latest_version=$latest_version"
+            echo "previous_branch=$previous_branch"
+          } >> "$GITHUB_ENV"
+
+          {
+            echo "latest_branch=$latest_branch"
+            echo "latest_version=$latest_version"
+            echo "previous_branch=$previous_branch"
+          } >> "$GITHUB_OUTPUT"
+      -
+        name: Check if the tag exists locally
+        uses: action-pack/tag-exists@v1
+        id: checkTag
+        with:
+          tag: 'v${{ env.latest_version }}'
+      -
+        name: Finish when found
+        id: status
+        run: |
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+
+          exists="${{ steps.checkTag.outputs.exists }}"
+
+          if [ "$exists" != "true" ] && [ "$exists" != "false" ]; then
+            echo "ERROR: Unexpected tag-exists result: $exists" >&2
+            exit 1
+          fi
+
+          echo "exists=$exists" >> "$GITHUB_OUTPUT"
+
+          if [ "$exists" = "true" ]; then
+            echo "Release v${latest_version} already exists."
+          fi
+      -
+        name: Generate release notes
+        if: steps.checkTag.outputs.exists == 'false'
+        env:
+          LATEST_BRANCH: ${{ env.latest_branch }}
+          LATEST_VERSION: ${{ env.latest_version }}
+          PREVIOUS_BRANCH: ${{ env.previous_branch }}
+        run: |
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+
+          repository="https://code.videolan.org/videolan/libudfread.git"
+          source="/tmp/libudfread"
+          assets="/tmp/release-assets"
+          output="$assets/release-notes.md"
+          previous_version=${PREVIOUS_BRANCH#v}
+
+          rm -rf "$source" "$assets"
+          mkdir -p "$assets"
+
+          git clone \
+            --quiet \
+            --no-checkout \
+            "$repository" \
+            "$source"
+
+          if ! git -C "$source" rev-parse \
+            --verify \
+            --quiet \
+            "refs/tags/$LATEST_BRANCH^{commit}" \
+            >/dev/null; then
+            echo "ERROR: Upstream tag not found: $LATEST_BRANCH" >&2
+            exit 1
+          fi
+
+          {
+            echo "## Changes"
+            echo
+            echo "**libudfread $LATEST_VERSION**"
+
+            if [ -n "$PREVIOUS_BRANCH" ]; then
+              if ! git -C "$source" rev-parse \
+                --verify \
+                --quiet \
+                "refs/tags/$PREVIOUS_BRANCH^{commit}" \
+                >/dev/null; then
+                echo "ERROR: Previous upstream tag not found: $PREVIOUS_BRANCH" >&2
+                exit 1
+              fi
+
+              echo
+              echo "Changes since \`$previous_version\`:"
+              echo
+
+              changes=$(
+                git -C "$source" log \
+                  --no-merges \
+                  --reverse \
+                  --format='- %s' \
+                  "$PREVIOUS_BRANCH..$LATEST_BRANCH"
+              )
+
+              if [ -n "$changes" ]; then
+                echo "$changes"
+              else
+                echo "- No changes were listed."
+              fi
+            else
+              echo
+              echo "- Initial packaged release."
+            fi
+
+            echo
+            echo "## Packages"
+            echo
+            echo "- Native AMD64 and ARM64 Debian packages."
+            echo "- libudfread is statically linked; no separate runtime package is required."
+            echo "- The exact upstream source archive is attached to this release."
+          } > "$output"
+
+          git -C "$source" archive \
+            --format=tar \
+            --prefix="libudfread-$LATEST_VERSION/" \
+            "$LATEST_BRANCH" |
+            xz -T0 -9 > "$assets/libudfread-$LATEST_VERSION-source.tar.xz"
+
+          cat "$output"
+      -
+        name: Upload release metadata
+        if: steps.checkTag.outputs.exists == 'false'
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-metadata
+          path: /tmp/release-assets/
+          if-no-files-found: error
+
+  build:
+    name: Build ${{ matrix.architecture }}
+    needs: detect
+    if: needs.detect.outputs.exists == 'false'
     strategy:
       fail-fast: false
       matrix:
         include:
-          - architecture: amd64
-            runner: ubuntu-24.04
-          - architecture: arm64
-            runner: ubuntu-24.04-arm
+          - runner: ubuntu-24.04
+            architecture: amd64
+          - runner: ubuntu-24.04-arm
+            architecture: arm64
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    env:
+      ARCHITECTURE: ${{ matrix.architecture }}
+      UPSTREAM_TAG: ${{ needs.detect.outputs.latest_branch }}
+      VERSION: ${{ needs.detect.outputs.latest_version }}
     steps:
       -
         name: Checkout
         uses: actions/checkout@v6
       -
-        name: Install dependencies
+        name: Install build dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential dpkg-dev pkg-config libudfread-dev
-      -
-        name: Build package
-        shell: bash
-        run: |
+          #!/usr/bin/env bash
           set -Eeuo pipefail
 
-          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+([.][0-9]+)?$ ]]; then
-              echo "Invalid package version: $VERSION" >&2
-              exit 1
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            git \
+            meson \
+            ninja-build \
+            pkg-config \
+            xz-utils
+      -
+        name: Retrieve libudfread source
+        run: |
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+
+          repository="https://code.videolan.org/videolan/libudfread.git"
+          source="/tmp/libudfread"
+
+          rm -rf "$source"
+
+          git clone \
+            --quiet \
+            --depth 1 \
+            --branch "$UPSTREAM_TAG" \
+            "$repository" \
+            "$source"
+
+          resolved_tag=$(git -C "$source" describe --tags --exact-match)
+
+          if [ "$resolved_tag" != "$UPSTREAM_TAG" ]; then
+            echo "ERROR: Expected $UPSTREAM_TAG but checked out $resolved_tag." >&2
+            exit 1
+          fi
+      -
+        name: Build static executable
+        run: |
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+
+          make \
+            VERSION="$VERSION" \
+            LIBUDFREAD_REF="$UPSTREAM_TAG" \
+            LIBUDFREAD_SOURCE="/tmp/libudfread"
+
+          ./udfread --version
+
+          if ! ./udfread --version | grep -Fxq "udfread $VERSION"; then
+            echo "ERROR: The executable reports the wrong version." >&2
+            exit 1
           fi
 
-          architecture="$(dpkg --print-architecture)"
-          if [[ "$architecture" != "${{ matrix.architecture }}" ]]; then
-              echo "Expected ${{ matrix.architecture }} runner, got $architecture" >&2
-              exit 1
+          if ! ./udfread --version | grep -Fxq "libudfread $VERSION"; then
+            echo "ERROR: The embedded libudfread version is incorrect." >&2
+            exit 1
           fi
 
-          make clean
-          make VERSION="$VERSION"
+          if ldd ./udfread 2>/dev/null | grep -q 'libudfread'; then
+            echo "ERROR: The executable dynamically links libudfread." >&2
+            exit 1
+          fi
+      -
+        name: Build Debian package
+        run: |
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+
+          package="udfread_${VERSION}_${ARCHITECTURE}.deb"
+          root="/tmp/package"
+          source="/tmp/libudfread"
+
+          rm -rf "$root" dist
+          mkdir -p \
+            "$root/DEBIAN" \
+            "$root/usr/bin" \
+            "$root/usr/share/doc/udfread" \
+            dist
+
           strip --strip-unneeded udfread
+          install -m 0755 udfread "$root/usr/bin/udfread"
+          install -m 0644 readme.md "$root/usr/share/doc/udfread/README.md"
+          install -m 0644 license.md "$root/usr/share/doc/udfread/copyright"
+          install -m 0644 "$source/COPYING" \
+            "$root/usr/share/doc/udfread/COPYING.libudfread"
 
-          package="debian/udfread"
-          output="dist/udfread_${VERSION}_${architecture}.deb"
+          git -C "$source" archive \
+            --format=tar \
+            --prefix="libudfread-$VERSION/" \
+            "$UPSTREAM_TAG" |
+            xz -T0 -9 > \
+              "$root/usr/share/doc/udfread/libudfread-$VERSION-source.tar.xz"
 
-          rm -rf debian dist
-          mkdir -p "$package/DEBIAN" "$package/usr/share/doc/udfread" dist
-          make install DESTDIR="$package" PREFIX=/usr
-          install -m 0644 readme.md "$package/usr/share/doc/udfread/README.md"
-          install -m 0644 license.md "$package/usr/share/doc/udfread/copyright"
+          mapfile -t needed_libraries < <(
+            readelf -d "$root/usr/bin/udfread" |
+              sed -n 's/.*Shared library: \[\([^]]*\)\].*/\1/p'
+          )
 
-          cat > debian/control <<'CONTROL'
-          Source: udfread
-          Section: utils
-          Priority: optional
-          Maintainer: qemus <noreply@github.com>
-          Homepage: https://github.com/qemus/udfread
-
-          Package: udfread
-          Architecture: any
-          Depends: ${shlibs:Depends}
-          Description: Command-line UDF reader powered by libudfread
-           Inspect and selectively read files from UDF images without mounting
-           the image or extracting a complete large file first.
-          CONTROL
-
-          multiarch="$(gcc -print-multiarch)"
-          dependencies="$(
-              dpkg-shlibdeps \
-                  -O \
-                  -l"/usr/lib/$multiarch" \
-                  "$package/usr/bin/udfread" |
-                  sed -n 's/^shlibs:Depends=//p'
-          )"
-
-          if [[ -z "$dependencies" ]]; then
-              echo "Failed to determine runtime dependencies" >&2
-              exit 1
+          if [ "${#needed_libraries[@]}" -ne 1 ] ||
+            [ "${needed_libraries[0]}" != "libc.so.6" ]; then
+            echo "ERROR: Unexpected runtime libraries:" >&2
+            printf '  %s\n' "${needed_libraries[@]}" >&2
+            exit 1
           fi
 
-          installed_size="$(du -sk "$package" | cut -f1)"
-          cat > "$package/DEBIAN/control" <<CONTROL
+          glibc_version=$(
+            objdump -T "$root/usr/bin/udfread" |
+              sed -n 's/.*(GLIBC_\([0-9][0-9.]*\)).*/\1/p' |
+              sort -V |
+              tail -n 1
+          )
+
+          if [ -z "$glibc_version" ]; then
+            echo "ERROR: The minimum glibc version could not be determined." >&2
+            exit 1
+          fi
+
+          dependencies="libc6 (>= $glibc_version)"
+
+          installed_size=$(du -sk "$root/usr" | awk '{print $1}')
+
+          cat > "$root/DEBIAN/control" <<EOF_CONTROL
           Package: udfread
           Version: $VERSION
           Section: utils
           Priority: optional
-          Architecture: $architecture
-          Depends: $dependencies
-          Maintainer: qemus <noreply@github.com>
+          Architecture: $ARCHITECTURE
+          Maintainer: qemus <qemus@users.noreply.github.com>
           Installed-Size: $installed_size
+          Depends: $dependencies
+          Built-Using: libudfread (= $VERSION)
           Homepage: https://github.com/qemus/udfread
           Description: Command-line UDF reader powered by libudfread
            Inspect and selectively read files from UDF images without mounting
-           the image or extracting a complete large file first.
-          CONTROL
+           the image or extracting complete large files. libudfread is statically
+           linked into the executable.
+          EOF_CONTROL
 
-          dpkg-deb --build --root-owner-group "$package" "$output"
-          dpkg-deb --info "$output"
-          dpkg-deb --contents "$output"
+          dpkg-deb \
+            --root-owner-group \
+            --build \
+            "$root" \
+            "dist/$package"
+
+          if [ "$(dpkg-deb -f "dist/$package" Architecture)" != "$ARCHITECTURE" ]; then
+            echo "ERROR: The package architecture is incorrect." >&2
+            exit 1
+          fi
+
+          dpkg-deb --info "dist/$package"
+          dpkg-deb --contents "dist/$package"
       -
-        name: Test package
-        shell: bash
+        name: Test Debian package
         run: |
+          #!/usr/bin/env bash
           set -Eeuo pipefail
-          sudo apt-get install -y ./dist/udfread_*.deb
+
+          package="dist/udfread_${VERSION}_${ARCHITECTURE}.deb"
+
+          sudo apt-get install -y "./$package"
           /usr/bin/udfread --version
+
+          if ! /usr/bin/udfread --version | grep -Fxq "udfread $VERSION"; then
+            echo "ERROR: The installed executable reports the wrong version." >&2
+            exit 1
+          fi
+
+          if ldd /usr/bin/udfread 2>/dev/null | grep -q 'libudfread'; then
+            echo "ERROR: The installed executable dynamically links libudfread." >&2
+            exit 1
+          fi
+
+          test -f \
+            "/usr/share/doc/udfread/libudfread-$VERSION-source.tar.xz"
       -
-        name: Upload package
+        name: Upload Debian package
         uses: actions/upload-artifact@v7
         with:
-          name: udfread-${{ matrix.architecture }}
-          path: dist/*.deb
+          name: udfread-${{ env.VERSION }}-${{ matrix.architecture }}
+          path: dist/udfread_${{ env.VERSION }}_${{ matrix.architecture }}.deb
           if-no-files-found: error
 
   release:
-    name: Release
-    needs: build
+    name: Publish release
+    needs:
+      - detect
+      - build
+    if: needs.detect.outputs.exists == 'false'
     runs-on: ubuntu-24.04
     permissions:
       actions: read
       contents: write
     env:
       GH_REPO: ${{ github.repository }}
-      GH_TOKEN: ${{ github.token }}
+      GH_TOKEN: ${{ secrets.REPO_ACCESS_TOKEN || github.token }}
+      VERSION: ${{ needs.detect.outputs.latest_version }}
     steps:
       -
-        name: Download packages
+        name: Download artifacts
         run: |
+          #!/usr/bin/env bash
           set -Eeuo pipefail
 
-          gh run download "$GITHUB_RUN_ID" \
-              --pattern 'udfread-*' \
-              --dir artifacts
+          rm -rf /tmp/artifacts
+          mkdir -p /tmp/artifacts
 
-          mkdir -p release
-          find artifacts -type f -name '*.deb' -exec cp -v {} release/ \;
+          gh run download \
+            "$GITHUB_RUN_ID" \
+            --dir /tmp/artifacts
 
-          test -f "release/udfread_${VERSION}_amd64.deb"
-          test -f "release/udfread_${VERSION}_arm64.deb"
+          find /tmp/artifacts -type f -print | sort
       -
         name: Create release
         run: |
+          #!/usr/bin/env bash
           set -Eeuo pipefail
-          gh release create "$TAG" \
-              release/*.deb \
-              --target "$GITHUB_SHA" \
-              --title "$VERSION" \
-              --generate-notes
-      -
-        name: Increment version variable
-        uses: action-pack/bump@v2
-        with:
-          token: ${{ secrets.REPO_ACCESS_TOKEN }}
+
+          notes=$(
+            find /tmp/artifacts \
+              -type f \
+              -name release-notes.md \
+              -print \
+              -quit
+          )
+
+          source_archive=$(
+            find /tmp/artifacts \
+              -type f \
+              -name "libudfread-$VERSION-source.tar.xz" \
+              -print \
+              -quit
+          )
+
+          mapfile -t packages < <(
+            find /tmp/artifacts \
+              -type f \
+              -name "udfread_${VERSION}_*.deb" \
+              -print |
+              sort
+          )
+
+          if [ -z "$notes" ] || [ ! -f "$notes" ]; then
+            echo "ERROR: Release notes were not downloaded." >&2
+            exit 1
+          fi
+
+          if [ -z "$source_archive" ] || [ ! -f "$source_archive" ]; then
+            echo "ERROR: The upstream source archive was not downloaded." >&2
+            exit 1
+          fi
+
+          if [ "${#packages[@]}" -ne 2 ]; then
+            echo "ERROR: Expected two Debian packages, found ${#packages[@]}." >&2
+            exit 1
+          fi
+
+          checksums="/tmp/SHA256SUMS"
+          sha256sum "${packages[@]}" "$source_archive" |
+            sed 's|  .*/|  |' > "$checksums"
+
+          cat "$checksums"
+
+          gh release create \
+            "v$VERSION" \
+            --target "$GITHUB_SHA" \
+            --title "$VERSION" \
+            --notes-file "$notes" \
+            "${packages[@]}" \
+            "$source_archive" \
+            "$checksums"
       -
         name: Send mail
         uses: action-pack/send-mail@v1
@@ -177,4 +516,4 @@ jobs:
           body: |
             The build job of ${{ github.event.repository.name }} ${{ env.VERSION }} was completed successfully!
 
-            See https://github.com/${{ github.repository }}/actions for more information.
+            See https://github.com/${{ github.repository }}/releases/tag/v${{ env.VERSION }} for more information.

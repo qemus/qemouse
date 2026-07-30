@@ -12,23 +12,25 @@
 
 # UDFread
 
-UDFread is a small command-line interface for the
-`libudfread` library.
+UDFread is a small command-line interface for the `libudfread` library.
 
 It can inspect and selectively read files from UDF images without mounting the
 image or extracting a complete large file first.
+
+Release binaries statically link the corresponding upstream `libudfread`
+release, so users do not need to install a separate runtime library package.
 
 ## Commands
 
 ```text
 udfread info IMAGE
-udfread ls \[-l] \[-R] IMAGE \[PATH]
+udfread ls [-l] [-R] IMAGE [PATH]
 udfread stat IMAGE PATH
 udfread cat IMAGE PATH
 udfread extract IMAGE PATH DESTINATION
-udfread range \[-o DESTINATION] IMAGE PATH OFFSET \[LENGTH]
+udfread range [-o DESTINATION] IMAGE PATH OFFSET [LENGTH]
 udfread map IMAGE PATH
-udfread blocks IMAGE PATH FILE\_BLOCK \[COUNT]
+udfread blocks IMAGE PATH FILE_BLOCK [COUNT]
 ```
 
 `range` performs a real logical seek through libudfread, so this reads only the
@@ -37,18 +39,47 @@ extents:
 
 ```bash
 udfread range -o wim-header.bin windows.iso /sources/install.wim 0 208
-udfread range -o install.xml windows.iso /sources/install.wim "$xml\_offset" "$xml\_size"
+udfread range -o install.xml windows.iso /sources/install.wim "$xml_offset" "$xml_size"
 ```
 
 Numbers may be decimal or hexadecimal with a `0x` prefix.
 
+## Install a release package
+
+Download the package matching the host architecture from the latest GitHub
+release and install it with `apt`:
+
+```bash
+sudo apt install ./udfread_VERSION_amd64.deb
+```
+
+The package has no runtime dependency on a separately installed libudfread
+package.
+
 ## Build on Debian or Ubuntu
+
+The build automatically retrieves the newest stable upstream libudfread tag,
+builds it as a static library, and links it into `udfread`:
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y build-essential pkg-config libudfread-dev
+sudo apt-get install -y build-essential git meson ninja-build pkg-config
 make
 sudo make install
+```
+
+To build a specific upstream release instead, remove any previously downloaded
+source and provide the desired tag:
+
+```bash
+make distclean
+make LIBUDFREAD_REF=1.2.0
+```
+
+An existing source checkout can also be supplied directly:
+
+```bash
+make LIBUDFREAD_SOURCE=/path/to/libudfread LIBUDFREAD_REF=1.2.0
 ```
 
 The default installation path is `/usr/local/bin/udfread`. To use another
@@ -60,21 +91,9 @@ make
 sudo make install PREFIX=/usr
 ```
 
-## Build on Fedora
+Use `make clean` to remove build products while retaining the downloaded
+upstream source, or `make distclean` to remove both.
 
-```bash
-sudo dnf install gcc make pkgconf-pkg-config libudfread-devel
-make
-sudo make install
-```
-
-## Build on Alpine
-
-```bash
-sudo apk add build-base pkgconf libudfread-dev
-make
-sudo make install
-```
 
 ## Stars 🌟
 [![Stargazers](https://raw.githubusercontent.com/star-stats/stars/refs/heads/data/charts/qemus-udfread.svg)](https://github.com/qemus/udfread/stargazers)
