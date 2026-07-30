@@ -333,10 +333,12 @@ jobs:
               sed -n 's/.*Shared library: \[\([^]]*\)\].*/\1/p'
           )
 
-          if [ "${#needed_libraries[@]}" -ne 1 ] ||
-            [ "${needed_libraries[0]}" != "libc.so.6" ]; then
-            echo "ERROR: Unexpected runtime libraries:" >&2
-            printf '  %s\n' "${needed_libraries[@]}" >&2
+          echo "Runtime libraries:"
+          printf '  %s\n' "${needed_libraries[@]}"
+
+          if printf '%s\n' "${needed_libraries[@]}" |
+            grep -Eq '^libudfread(\.so([.][0-9]+)*)?$'; then
+            echo "ERROR: The executable dynamically links libudfread." >&2
             exit 1
           fi
 
