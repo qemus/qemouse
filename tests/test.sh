@@ -3,7 +3,8 @@ set -Eeuo pipefail
 
 binary=${1:-./udfread}
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-fixture="$root/tests/fixture.udf.xz"
+fixture="$root/tests/fixture.iso"
+checksum="$root/tests/fixture.iso.sha256"
 expected="$root/tests/expected"
 work=$(mktemp -d)
 
@@ -18,20 +19,19 @@ if [ ! -x "$binary" ]; then
   exit 1
 fi
 
-xz \
-  --decompress \
-  --stdout \
-  "$fixture" \
-  > "$work/fixture.udf"
+(
+  cd "$root/tests"
+  sha256sum --check "$(basename "$checksum")"
+)
 
-"$binary" info "$work/fixture.udf" \
+"$binary" info "$fixture" \
   > "$work/info.txt"
 
 grep -Fxq \
   "Volume ID: UDFREAD_TEST" \
   "$work/info.txt"
 
-"$binary" ls -l -R "$work/fixture.udf" \
+"$binary" ls -l -R "$fixture" \
   > "$work/list.txt"
 
 grep -Fxq -- \
@@ -51,7 +51,7 @@ grep -Fxq -- \
   "$work/list.txt"
 
 "$binary" stat \
-  "$work/fixture.udf" \
+  "$fixture" \
   /nested/data.bin \
   > "$work/stat.txt"
 
@@ -68,7 +68,7 @@ grep -Fxq \
   "$work/stat.txt"
 
 "$binary" cat \
-  "$work/fixture.udf" \
+  "$fixture" \
   /hello.txt \
   > "$work/hello.txt"
 
@@ -77,14 +77,14 @@ cmp \
   "$work/hello.txt"
 
 "$binary" cat \
-  "$work/fixture.udf" \
+  "$fixture" \
   /empty.txt \
   > "$work/empty.txt"
 
 test ! -s "$work/empty.txt"
 
 "$binary" extract \
-  "$work/fixture.udf" \
+  "$fixture" \
   /nested/data.bin \
   "$work/nested.bin"
 
@@ -94,7 +94,7 @@ cmp \
 
 "$binary" range \
   -o "$work/range.bin" \
-  "$work/fixture.udf" \
+  "$fixture" \
   /nested/data.bin \
   1900 \
   500
@@ -112,7 +112,7 @@ cmp \
   "$work/range.bin"
 
 "$binary" map \
-  "$work/fixture.udf" \
+  "$fixture" \
   /nested/data.bin \
   > "$work/map.txt"
 
@@ -125,7 +125,7 @@ grep -Fxq \
   "$work/map.txt"
 
 "$binary" blocks \
-  "$work/fixture.udf" \
+  "$fixture" \
   /nested/data.bin \
   0 \
   2 \

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-import lzma
+import hashlib
 import struct
 from pathlib import Path
 
@@ -9,7 +9,8 @@ TOTAL_BLOCKS = 320
 PARTITION_START = 270
 
 ROOT = Path(__file__).resolve().parent
-FIXTURE = ROOT / "fixture.udf.xz"
+FIXTURE = ROOT / "fixture.iso"
+CHECKSUM = ROOT / "fixture.iso.sha256"
 EXPECTED = ROOT / "expected"
 
 HELLO_CONTENT = b"Hello from the UDF fixture.\n"
@@ -210,15 +211,16 @@ def main() -> None:
     EXPECTED.joinpath("hello.txt").write_bytes(HELLO_CONTENT)
     EXPECTED.joinpath("nested.bin").write_bytes(NESTED_CONTENT)
 
-    compressed = lzma.compress(
-        create_image(),
-        format=lzma.FORMAT_XZ,
-        check=lzma.CHECK_CRC32,
-        preset=9 | lzma.PRESET_EXTREME,
-    )
-    FIXTURE.write_bytes(compressed)
+    image = create_image()
+    digest = hashlib.sha256(image).hexdigest()
 
-    print(f"Created {FIXTURE.relative_to(ROOT.parent)} ({len(compressed)} bytes)")
+    FIXTURE.write_bytes(image)
+    CHECKSUM.write_text(f"{digest}  {FIXTURE.name}\n", encoding="ascii")
+
+    print(
+        f"Created {FIXTURE.relative_to(ROOT.parent)} "
+        f"({len(image)} bytes, SHA-256 {digest})"
+    )
 
 
 if __name__ == "__main__":

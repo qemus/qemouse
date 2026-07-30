@@ -23,7 +23,7 @@ jobs:
     steps:
       -
         name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
       -
@@ -231,7 +231,7 @@ jobs:
     steps:
       -
         name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v6
       -
         name: Install build dependencies
         run: |
@@ -389,7 +389,7 @@ jobs:
           dpkg-deb --info "dist/$package"
           dpkg-deb --contents "dist/$package"
       -
-        name: Test Debian package
+        name: Install Debian package
         run: |
           #!/usr/bin/env bash
           set -Eeuo pipefail
@@ -397,6 +397,12 @@ jobs:
           package="dist/udfread_${VERSION}_${ARCHITECTURE}.deb"
 
           sudo apt-get install -y "./$package"
+      -
+        name: Test
+        run: |
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+
           /usr/bin/udfread --version
 
           if ! /usr/bin/udfread --version | grep -Fxq "udfread $VERSION"; then
