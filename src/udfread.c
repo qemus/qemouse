@@ -11,8 +11,8 @@
 
 #include <udfread/udfread.h>
 
-#ifndef UDFREAD_CLI_VERSION
-#define UDFREAD_CLI_VERSION "0.1.0"
+#ifndef UDFREAD_VERSION
+#define UDFREAD_VERSION "0.1.0"
 #endif
 
 #ifndef UDF_BLOCK_SIZE
@@ -81,7 +81,7 @@ static void print_version(void)
     int micro = 0;
 
     udfread_get_version(&major, &minor, &micro);
-    printf("udfread-cli %s\n", UDFREAD_CLI_VERSION);
+    printf("udfread %s\n", UDFREAD_VERSION);
     printf("libudfread %d.%d.%d\n", major, minor, micro);
 }
 

@@ -7,27 +7,160 @@ concurrency:
   group: build
   cancel-in-progress: false
 
+env:
+  VERSION: "${{ vars.MAJOR }}.${{ vars.MINOR }}"
+  TAG: "v${{ vars.MAJOR }}.${{ vars.MINOR }}"
+
 jobs:
   build:
-    name: Build
-    runs-on: ubuntu-latest
+    name: Build ${{ matrix.architecture }}
+    runs-on: ${{ matrix.runner }}
     permissions:
-      actions: write
-      packages: write
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: amd64
+            runner: ubuntu-24.04
+          - architecture: arm64
+            runner: ubuntu-24.04-arm
     steps:
       -
         name: Checkout
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
+        uses: actions/checkout@v6
       -
-        name: Create a release
-        uses: action-pack/github-release@v2
+        name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential dpkg-dev pkg-config libudfread-dev
+      -
+        name: Build package
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+([.][0-9]+)?$ ]]; then
+              echo "Invalid package version: $VERSION" >&2
+              exit 1
+          fi
+
+          architecture="$(dpkg --print-architecture)"
+          if [[ "$architecture" != "${{ matrix.architecture }}" ]]; then
+              echo "Expected ${{ matrix.architecture }} runner, got $architecture" >&2
+              exit 1
+          fi
+
+          make clean
+          make VERSION="$VERSION"
+          strip --strip-unneeded udfread
+
+          package="debian/udfread"
+          output="dist/udfread_${VERSION}_${architecture}.deb"
+
+          rm -rf debian dist
+          mkdir -p "$package/DEBIAN" "$package/usr/share/doc/udfread" dist
+          make install DESTDIR="$package" PREFIX=/usr
+          install -m 0644 readme.md "$package/usr/share/doc/udfread/README.md"
+          install -m 0644 license.md "$package/usr/share/doc/udfread/copyright"
+
+          cat > debian/control <<'CONTROL'
+          Source: udfread
+          Section: utils
+          Priority: optional
+          Maintainer: qemus <noreply@github.com>
+          Homepage: https://github.com/qemus/udfread
+
+          Package: udfread
+          Architecture: any
+          Depends: ${shlibs:Depends}
+          Description: Command-line UDF reader powered by libudfread
+           Inspect and selectively read files from UDF images without mounting
+           the image or extracting a complete large file first.
+          CONTROL
+
+          multiarch="$(gcc -print-multiarch)"
+          dependencies="$(
+              dpkg-shlibdeps \
+                  -O \
+                  -l"/usr/lib/$multiarch" \
+                  "$package/usr/bin/udfread" |
+                  sed -n 's/^shlibs:Depends=//p'
+          )"
+
+          if [[ -z "$dependencies" ]]; then
+              echo "Failed to determine runtime dependencies" >&2
+              exit 1
+          fi
+
+          installed_size="$(du -sk "$package" | cut -f1)"
+          cat > "$package/DEBIAN/control" <<CONTROL
+          Package: udfread
+          Version: $VERSION
+          Section: utils
+          Priority: optional
+          Architecture: $architecture
+          Depends: $dependencies
+          Maintainer: qemus <noreply@github.com>
+          Installed-Size: $installed_size
+          Homepage: https://github.com/qemus/udfread
+          Description: Command-line UDF reader powered by libudfread
+           Inspect and selectively read files from UDF images without mounting
+           the image or extracting a complete large file first.
+          CONTROL
+
+          dpkg-deb --build --root-owner-group "$package" "$output"
+          dpkg-deb --info "$output"
+          dpkg-deb --contents "$output"
+      -
+        name: Test package
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get install -y ./dist/udfread_*.deb
+          /usr/bin/udfread --version
+      -
+        name: Upload package
+        uses: actions/upload-artifact@v7
         with:
-          tag: "v${{ vars.MAJOR }}.${{ vars.MINOR }}"
-          title: "${{ vars.MAJOR }}.${{ vars.MINOR }}"
-          token: ${{ secrets.REPO_ACCESS_TOKEN }}
+          name: udfread-${{ matrix.architecture }}
+          path: dist/*.deb
+          if-no-files-found: error
+
+  release:
+    name: Release
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      -
+        name: Download packages
+        run: |
+          set -Eeuo pipefail
+
+          gh run download "$GITHUB_RUN_ID" \
+              --pattern 'udfread-*' \
+              --dir artifacts
+
+          mkdir -p release
+          find artifacts -type f -name '*.deb' -exec cp -v {} release/ \;
+
+          test -f "release/udfread_${VERSION}_amd64.deb"
+          test -f "release/udfread_${VERSION}_arm64.deb"
+      -
+        name: Create release
+        run: |
+          set -Eeuo pipefail
+          gh release create "$TAG" \
+              release/*.deb \
+              --target "$GITHUB_SHA" \
+              --title "$VERSION" \
+              --generate-notes
       -
         name: Increment version variable
         uses: action-pack/bump@v2
@@ -37,11 +170,11 @@ jobs:
         name: Send mail
         uses: action-pack/send-mail@v1
         with:
-          to: ${{secrets.MAILTO}}
-          from: Github Actions <${{secrets.MAILTO}}>
-          connection_url: ${{secrets.MAIL_CONNECTION}}
-          subject: Build of ${{ github.event.repository.name }} ${{ vars.MAJOR }}.${{ vars.MINOR }} completed
+          to: ${{ secrets.MAILTO }}
+          from: Github Actions <${{ secrets.MAILTO }}>
+          connection_url: ${{ secrets.MAIL_CONNECTION }}
+          subject: Build of ${{ github.event.repository.name }} ${{ env.VERSION }} completed
           body: |
-              The build job of ${{ github.event.repository.name }} ${{ vars.MAJOR }}.${{ vars.MINOR }} was completed successfully!
+            The build job of ${{ github.event.repository.name }} ${{ env.VERSION }} was completed successfully!
 
-              See https://github.com/${{ github.repository }}/actions for more information.
+            See https://github.com/${{ github.repository }}/actions for more information.

@@ -14,7 +14,7 @@ $(error libudfread development files not found; install libudfread-dev and pkg-c
 endif
 endif
 
-CPPFLAGS += $(UDFREAD_CFLAGS) -DUDFREAD_CLI_VERSION=\"$(VERSION)\"
+CPPFLAGS += $(UDFREAD_CFLAGS) -DUDFREAD_VERSION=\"$(VERSION)\"
 CFLAGS ?= -O2
 CFLAGS += -std=c11 -Wall -Wextra -Wpedantic -Wconversion -Wshadow \
 	-D_FILE_OFFSET_BITS=64
