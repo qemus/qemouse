@@ -27,9 +27,12 @@ LDFLAGS += -Wl,--gc-sections
 TARGET := udfread
 SOURCE := src/udfread.c
 
-.PHONY: all clean distclean install uninstall vendor
+.PHONY: all clean distclean install test uninstall vendor
 
 all: $(TARGET)
+
+test: $(TARGET)
+	./tests/test.sh ./$(TARGET)
 
 $(LIBUDFREAD_SOURCE)/meson.build:
 	@set -Eeuo pipefail; \
