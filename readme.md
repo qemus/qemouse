@@ -1,3 +1,4 @@
+<h1 align="center">UDFread<br />
 <div align="center">
 <a href="https://github.com/qemus/udfread"><img src="https://raw.githubusercontent.com/qemus/udfread/master/.github/logo.png" title="Logo" style="max-width:100%;" width="128" /></a>
 </div>
@@ -11,8 +12,8 @@
 
 # UDFread
 
-UDFread is a small command-line interface for VideoLAN's read-only
-`libudfread` library. The installed binary is named `udfread`.
+UDFread is a small command-line interface for the
+`libudfread` library.
 
 It can inspect and selectively read files from UDF images without mounting the
 image or extracting a complete large file first.
@@ -74,26 +75,6 @@ sudo apk add build-base pkgconf libudfread-dev
 make
 sudo make install
 ```
-
-## Design notes
-
-The CLI covers the useful filesystem-facing parts of libudfread:
-
-* volume identifiers;
-* directory traversal;
-* file opening and sizing;
-* seekable byte-stream reads;
-* logical block reads;
-* logical-file-block to physical-LBA mapping;
-* library version reporting.
-
-`udfread\_open\_input()` is intentionally not represented as a command because it
-is an embedding API for applications that provide their own block backend.
-There is also no write support because libudfread itself is read-only.
-
-The `blocks` command writes complete 2048-byte logical blocks. The last block
-can therefore include bytes beyond the logical EOF. Use `range` when exact byte
-length matters.
 
 ## Stars 🌟
 [![Stargazers](https://raw.githubusercontent.com/star-stats/stars/refs/heads/data/charts/qemus-udfread.svg)](https://github.com/qemus/udfread/stargazers)
