@@ -102,5 +102,5 @@ upstream source, or `make distclean` to remove both.
 [release_url]: https://github.com/qemus/udfread/releases/
 
 [Build]: https://github.com/qemus/udfread/actions/workflows/build.yml/badge.svg
-[Size]: https://img.shields.io/badge/size-712_KB-steelblue?style=flat&color=066da5
+[Size]: https://img.shields.io/badge/size-64_KB-steelblue?style=flat&color=066da5
 [Version]: https://img.shields.io/github/v/tag/qemus/udfread?label=version&sort=semver&color=066da5
