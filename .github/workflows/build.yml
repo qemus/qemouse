@@ -126,6 +126,7 @@ jobs:
 
           repository="https://code.videolan.org/videolan/libudfread.git"
           source="/tmp/libudfread"
+          patch="$GITHUB_WORKSPACE/patches/libudfread-vds-fixes.patch"
           assets="/tmp/release-assets"
           output="$assets/release-notes.md"
           previous_version=${PREVIOUS_BRANCH#v}
@@ -148,10 +149,31 @@ jobs:
             exit 1
           fi
 
+          git -C "$source" checkout \
+            --quiet \
+            --detach \
+            "$LATEST_BRANCH"
+
+          git -C "$source" apply --check "$patch"
+          git -C "$source" apply "$patch"
+          git -C "$source" diff --check
+
+          git -C "$source" \
+            -c user.name="GitHub Actions" \
+            -c user.email="actions@github.com" \
+            commit \
+            --quiet \
+            -am "Apply compatibility fixes"
+
           {
             echo "## Changes"
             echo
             echo "**libudfread $LATEST_VERSION**"
+            echo
+            echo "Patches:"
+            echo
+            echo "- Accept nonzero UDF physical partition numbers."
+            echo "- Require a Primary Volume Descriptor before accepting a Volume Descriptor Sequence."
 
             if [ -n "$PREVIOUS_BRANCH" ]; then
               if ! git -C "$source" rev-parse \
@@ -190,13 +212,13 @@ jobs:
             echo
             echo "- Native AMD64 and ARM64 Debian packages."
             echo "- libudfread is statically linked; no separate runtime package is required."
-            echo "- The exact upstream source archive is attached to this release."
+            echo "- The exact patched libudfread source archive is attached to this release."
           } > "$output"
 
           git -C "$source" archive \
             --format=tar \
             --prefix="libudfread-$LATEST_VERSION/" \
-            "$LATEST_BRANCH" |
+            HEAD |
             xz -T0 -9 > "$assets/libudfread-$LATEST_VERSION-source.tar.xz"
 
           cat "$output"
@@ -255,6 +277,7 @@ jobs:
 
           repository="https://code.videolan.org/videolan/libudfread.git"
           source="/tmp/libudfread"
+          patch="$GITHUB_WORKSPACE/patches/libudfread-vds-fixes.patch"
 
           rm -rf "$source"
 
@@ -271,6 +294,17 @@ jobs:
             echo "ERROR: Expected $UPSTREAM_TAG but checked out $resolved_tag." >&2
             exit 1
           fi
+
+          git -C "$source" apply --check "$patch"
+          git -C "$source" apply "$patch"
+          git -C "$source" diff --check
+
+          git -C "$source" \
+            -c user.name="GitHub Actions" \
+            -c user.email="actions@github.com" \
+            commit \
+            --quiet \
+            -am "Apply compatibility fixes"
       -
         name: Build static executable
         run: |
@@ -325,7 +359,7 @@ jobs:
           git -C "$source" archive \
             --format=tar \
             --prefix="libudfread-$VERSION/" \
-            "$UPSTREAM_TAG" |
+            HEAD |
             xz -T0 -9 > \
               "$root/usr/share/doc/udfread/libudfread-$VERSION-source.tar.xz"
 
@@ -495,7 +529,7 @@ jobs:
           fi
 
           if [ -z "$source_archive" ] || [ ! -f "$source_archive" ]; then
-            echo "ERROR: The upstream source archive was not downloaded." >&2
+            echo "ERROR: The patched source archive was not downloaded." >&2
             exit 1
           fi
 
