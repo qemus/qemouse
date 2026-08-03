@@ -33,16 +33,75 @@ udfread map IMAGE PATH
 udfread blocks IMAGE PATH FILE_BLOCK [COUNT]
 ```
 
-`range` performs a real logical seek through libudfread, so this reads only the
-requested part of a file even when the UDF file uses multiple allocation
-extents:
+## Examples
+
+Show information about a UDF image:
 
 ```bash
-udfread range -o wim-header.bin windows.iso /sources/install.wim 0 208
-udfread range -o install.xml windows.iso /sources/install.wim "$xml_offset" "$xml_size"
+udfread info disc.iso
 ```
 
+List the root directory or recursively inspect a subdirectory:
+
+```bash
+udfread ls -l disc.iso /
+udfread ls -l -R disc.iso /documents
+```
+
+Show information about a file:
+
+```bash
+udfread stat disc.iso /documents/manual.pdf
+```
+
+Write a text file to standard output:
+
+```bash
+udfread cat disc.iso /README.TXT
+```
+
+Extract one file without unpacking the complete image:
+
+```bash
+udfread extract disc.iso /images/logo.png ./logo.png
+```
+
+Read only a selected byte range from a large file:
+
+```bash
+udfread range -o file-header.bin disc.iso /data/archive.bin 0 4096
+udfread range disc.iso /data/archive.bin 0x1000 0x200 | sha256sum
+```
+
+`range` performs a real logical seek through `libudfread`, so it reads only the
+requested part of a file even when the UDF file uses multiple allocation
+extents.
+
 Numbers may be decimal or hexadecimal with a `0x` prefix.
+
+Show how the logical blocks of a file map to physical locations in the image:
+
+```bash
+udfread map disc.iso /video/movie.m2ts
+udfread blocks disc.iso /video/movie.m2ts 0 16
+```
+
+## Case-insensitive paths
+
+Use `-i` or `--ignore-case` with any command that accepts a UDF path to resolve
+each path component using ASCII case-insensitive matching:
+
+```bash
+udfread stat -i disc.iso /DOCUMENTS/MANUAL.PDF
+udfread extract --ignore-case disc.iso /IMAGES/LOGO.PNG ./logo.png
+```
+
+An exact component match always takes precedence. If no exact match exists and
+multiple entries differ only by ASCII letter case, the lookup fails as
+ambiguous instead of selecting an entry arbitrarily.
+
+Output from commands such as `stat` and `ls` uses the actual path spelling
+stored in the image.
 
 ## Install a release package
 
@@ -53,12 +112,12 @@ release and install it with `apt`:
 sudo apt install ./udfread_VERSION_amd64.deb
 ```
 
-The package has no runtime dependency on a separately installed libudfread
+The package has no runtime dependency on a separately installed `libudfread`
 package.
 
 ## Build on Debian or Ubuntu
 
-The build automatically retrieves the newest stable upstream libudfread tag,
+The build automatically retrieves the newest stable upstream `libudfread` tag,
 builds it as a static library, and links it into `udfread`:
 
 ```bash
@@ -94,8 +153,8 @@ sudo make install PREFIX=/usr
 Use `make clean` to remove build products while retaining the downloaded
 upstream source, or `make distclean` to remove both.
 
-
 ## Stars 🌟
+
 [![Stargazers](https://raw.githubusercontent.com/star-stats/stars/refs/heads/data/charts/qemus-udfread.svg)](https://github.com/qemus/udfread/stargazers)
 
 [build_url]: https://github.com/qemus/udfread/

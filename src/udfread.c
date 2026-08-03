@@ -70,6 +70,10 @@ static void print_usage(FILE *stream)
         "  map       Show contiguous physical LBA runs backing a file.\n"
         "  blocks    Stream logical 2048-byte file blocks to standard output.\n"
         "\n"
+        "Options:\n"
+        "  -i, --ignore-case  Resolve each path component using a unique ASCII\n"
+        "                     case-insensitive match after trying an exact match.\n"
+        "\n"
         "Numbers accept decimal or a 0x hexadecimal prefix. Use '-' as a\n"
         "destination to write to standard output.\n");
 }
@@ -213,6 +217,242 @@ static char *normalize_display_path(const char *path)
     memcpy(result + 1, path, length);
     result[length + 1] = '\0';
     return result;
+}
+
+static bool is_path_separator(char value)
+{
+    return value == '/' || value == '\\';
+}
+
+static unsigned char ascii_lower(unsigned char value)
+{
+    if (value >= (unsigned char)'A' && value <= (unsigned char)'Z')
+        return (unsigned char)(value + ((unsigned char)'a' - (unsigned char)'A'));
+
+    return value;
+}
+
+static bool ascii_case_equal(const char *left, const char *right)
+{
+    while (*left != '\0' && *right != '\0') {
+        if (ascii_lower((unsigned char)*left) !=
+            ascii_lower((unsigned char)*right))
+            return false;
+
+        left++;
+        right++;
+    }
+
+    return *left == '\0' && *right == '\0';
+}
+
+static int find_path_component(UDFDIR *directory, const char *component,
+    const char *parent_path, char **resolved_name, unsigned int *resolved_type,
+    bool *found)
+{
+    struct udfread_dirent storage;
+    struct udfread_dirent *entry;
+    char *case_match = NULL;
+    unsigned int case_match_type = UDF_DT_UNKNOWN;
+    size_t case_matches = 0;
+
+    *resolved_name = NULL;
+    *resolved_type = UDF_DT_UNKNOWN;
+    *found = false;
+
+    udfread_rewinddir(directory);
+
+    while ((entry = udfread_readdir(directory, &storage)) != NULL) {
+        char *name;
+
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
+            continue;
+
+        if (strcmp(entry->d_name, component) == 0) {
+            name = duplicate_string(entry->d_name);
+            if (name == NULL) {
+                free(case_match);
+                udfread_rewinddir(directory);
+                return EXIT_FAILURE_RUNTIME;
+            }
+
+            free(case_match);
+            *resolved_name = name;
+            *resolved_type = entry->d_type;
+            *found = true;
+            udfread_rewinddir(directory);
+            return EXIT_OK;
+        }
+
+        if (!ascii_case_equal(entry->d_name, component))
+            continue;
+
+        case_matches++;
+        if (case_matches != 1)
+            continue;
+
+        case_match = duplicate_string(entry->d_name);
+        if (case_match == NULL) {
+            udfread_rewinddir(directory);
+            return EXIT_FAILURE_RUNTIME;
+        }
+        case_match_type = entry->d_type;
+    }
+
+    udfread_rewinddir(directory);
+
+    if (case_matches == 1) {
+        *resolved_name = case_match;
+        *resolved_type = case_match_type;
+        *found = true;
+        return EXIT_OK;
+    }
+
+    free(case_match);
+
+    if (case_matches > 1) {
+        fprintf(stderr,
+            "udfread: ambiguous case-insensitive path component '%s' in '%s'\n",
+            component, parent_path);
+        return EXIT_FAILURE_RUNTIME;
+    }
+
+    return EXIT_OK;
+}
+
+static int resolve_udf_path(udfread *volume, const char *path,
+    bool ignore_case, char **resolved_path)
+{
+    char *normalized;
+    char *current_path;
+    char *cursor;
+    UDFDIR *directory;
+    int result = EXIT_OK;
+
+    *resolved_path = NULL;
+
+    if (!ignore_case) {
+        *resolved_path = duplicate_string(path);
+        return *resolved_path != NULL ? EXIT_OK : EXIT_FAILURE_RUNTIME;
+    }
+
+    normalized = normalize_display_path(path);
+    if (normalized == NULL)
+        return EXIT_FAILURE_RUNTIME;
+
+    for (cursor = normalized; *cursor != '\0'; cursor++) {
+        if (*cursor == '\\')
+            *cursor = '/';
+    }
+
+    current_path = duplicate_string("/");
+    if (current_path == NULL) {
+        free(normalized);
+        return EXIT_FAILURE_RUNTIME;
+    }
+
+    if (strcmp(normalized, "/") == 0) {
+        free(normalized);
+        *resolved_path = current_path;
+        return EXIT_OK;
+    }
+
+    directory = udfread_opendir(volume, "/");
+    if (directory == NULL) {
+        free(current_path);
+        free(normalized);
+        return runtime_error("failed to open UDF root directory");
+    }
+
+    cursor = normalized;
+    while (*cursor != '\0') {
+        char *component;
+        char *next;
+        char *resolved_name;
+        char *child_path;
+        unsigned int resolved_type;
+        bool found;
+        bool last;
+
+        while (is_path_separator(*cursor))
+            cursor++;
+        if (*cursor == '\0')
+            break;
+
+        component = cursor;
+        while (*cursor != '\0' && !is_path_separator(*cursor))
+            cursor++;
+
+        next = cursor;
+        while (is_path_separator(*next))
+            next++;
+        last = *next == '\0';
+
+        if (*cursor != '\0')
+            *cursor = '\0';
+
+        if (strcmp(component, ".") == 0 || strcmp(component, "..") == 0) {
+            result = runtime_error_path("invalid UDF path component", component);
+            break;
+        }
+
+        result = find_path_component(directory, component, current_path,
+            &resolved_name, &resolved_type, &found);
+        if (result != EXIT_OK)
+            break;
+
+        if (!found) {
+            result = runtime_error_path("path not found", path);
+            break;
+        }
+
+        child_path = join_display_path(current_path, resolved_name);
+        if (child_path == NULL) {
+            free(resolved_name);
+            result = EXIT_FAILURE_RUNTIME;
+            break;
+        }
+
+        if (!last) {
+            UDFDIR *child_directory;
+
+            if (resolved_type != UDF_DT_DIR && resolved_type != UDF_DT_UNKNOWN) {
+                free(child_path);
+                free(resolved_name);
+                result = runtime_error_path("path component is not a directory",
+                    component);
+                break;
+            }
+
+            child_directory = udfread_opendir_at(directory, resolved_name);
+            if (child_directory == NULL) {
+                free(child_path);
+                free(resolved_name);
+                result = runtime_error_path("failed to open UDF directory",
+                    component);
+                break;
+            }
+
+            udfread_closedir(directory);
+            directory = child_directory;
+        }
+
+        free(current_path);
+        current_path = child_path;
+        free(resolved_name);
+        cursor = next;
+    }
+
+    udfread_closedir(directory);
+    free(normalized);
+
+    if (result != EXIT_OK) {
+        free(current_path);
+        return result;
+    }
+
+    *resolved_path = current_path;
+    return EXIT_OK;
 }
 
 static void free_directory_entries(struct directory_entries *entries)
@@ -441,12 +681,14 @@ static int command_info(const char *image_path)
 
 static int command_ls(int argc, char **argv)
 {
+    bool ignore_case = false;
     bool recursive = false;
     bool long_format = false;
     int index = 2;
     int remaining;
     const char *image_path;
     const char *udf_path;
+    char *resolved_path;
     char *display_path;
     struct image_handle image;
     UDFDIR *directory;
@@ -456,6 +698,12 @@ static int command_ls(int argc, char **argv)
         if (strcmp(argv[index], "--") == 0) {
             index++;
             break;
+        }
+        if (strcmp(argv[index], "-i") == 0 ||
+            strcmp(argv[index], "--ignore-case") == 0) {
+            ignore_case = true;
+            index++;
+            continue;
         }
         if (strcmp(argv[index], "-R") == 0 ||
             strcmp(argv[index], "--recursive") == 0) {
@@ -478,20 +726,30 @@ static int command_ls(int argc, char **argv)
 
     image_path = argv[index];
     udf_path = remaining == 2 ? argv[index + 1] : "/";
-    display_path = normalize_display_path(udf_path);
-    if (display_path == NULL)
-        return EXIT_FAILURE_RUNTIME;
 
     result = open_image(&image, image_path);
+    if (result != EXIT_OK)
+        return result;
+
+    result = resolve_udf_path(image.volume, udf_path, ignore_case,
+        &resolved_path);
     if (result != EXIT_OK) {
-        free(display_path);
+        close_image(&image);
         return result;
     }
 
-    directory = udfread_opendir(image.volume, udf_path);
-    if (directory == NULL) {
+    display_path = normalize_display_path(resolved_path);
+    if (display_path == NULL) {
+        free(resolved_path);
         close_image(&image);
+        return EXIT_FAILURE_RUNTIME;
+    }
+
+    directory = udfread_opendir(image.volume, resolved_path);
+    if (directory == NULL) {
         free(display_path);
+        free(resolved_path);
+        close_image(&image);
         return runtime_error_path("failed to open UDF directory", udf_path);
     }
 
@@ -502,14 +760,46 @@ static int command_ls(int argc, char **argv)
 
     udfread_rewinddir(directory);
     udfread_closedir(directory);
-    close_image(&image);
     free(display_path);
+    free(resolved_path);
+    close_image(&image);
     return result;
 }
 
-static int command_stat(const char *image_path, const char *udf_path)
+static int parse_ignore_case_options(int argc, char **argv, int *index,
+    bool *ignore_case, const char *command)
 {
+    char message[64];
+
+    *ignore_case = false;
+
+    while (*index < argc && argv[*index][0] == '-') {
+        if (strcmp(argv[*index], "--") == 0) {
+            (*index)++;
+            break;
+        }
+        if (strcmp(argv[*index], "-i") == 0 ||
+            strcmp(argv[*index], "--ignore-case") == 0) {
+            *ignore_case = true;
+            (*index)++;
+            continue;
+        }
+
+        snprintf(message, sizeof(message), "unknown %s option", command);
+        return usage_error(message);
+    }
+
+    return EXIT_OK;
+}
+
+static int command_stat(int argc, char **argv)
+{
+    bool ignore_case;
+    int index = 2;
     struct image_handle image;
+    const char *image_path;
+    const char *udf_path;
+    char *resolved_path;
     UDFDIR *directory;
     UDFFILE *file;
     int64_t size;
@@ -517,21 +807,40 @@ static int command_stat(const char *image_path, const char *udf_path)
     uint32_t first_lba;
     int result;
 
+    result = parse_ignore_case_options(argc, argv, &index, &ignore_case, "stat");
+    if (result != EXIT_OK)
+        return result;
+
+    if (argc - index != 2)
+        return usage_error("stat expects IMAGE and PATH");
+
+    image_path = argv[index];
+    udf_path = argv[index + 1];
+
     result = open_image(&image, image_path);
     if (result != EXIT_OK)
         return result;
 
-    directory = udfread_opendir(image.volume, udf_path);
+    result = resolve_udf_path(image.volume, udf_path, ignore_case,
+        &resolved_path);
+    if (result != EXIT_OK) {
+        close_image(&image);
+        return result;
+    }
+
+    directory = udfread_opendir(image.volume, resolved_path);
     if (directory != NULL) {
-        printf("Path: %s\n", udf_path);
+        printf("Path: %s\n", resolved_path);
         printf("Type: directory\n");
         udfread_closedir(directory);
+        free(resolved_path);
         close_image(&image);
         return EXIT_OK;
     }
 
-    file = udfread_file_open(image.volume, udf_path);
+    file = udfread_file_open(image.volume, resolved_path);
     if (file == NULL) {
+        free(resolved_path);
         close_image(&image);
         return runtime_error_path("path not found", udf_path);
     }
@@ -539,6 +848,7 @@ static int command_stat(const char *image_path, const char *udf_path)
     size = udfread_file_size(file);
     if (size < 0) {
         udfread_file_close(file);
+        free(resolved_path);
         close_image(&image);
         return runtime_error_path("failed to get file size", udf_path);
     }
@@ -546,7 +856,7 @@ static int command_stat(const char *image_path, const char *udf_path)
     blocks = ((uint64_t)size + UDF_BLOCK_SIZE - 1U) / UDF_BLOCK_SIZE;
     first_lba = blocks > 0 ? udfread_file_lba(file, 0) : 0;
 
-    printf("Path: %s\n", udf_path);
+    printf("Path: %s\n", resolved_path);
     printf("Type: regular file\n");
     printf("Size: %" PRId64 " bytes\n", size);
     printf("Logical blocks: %" PRIu64 "\n", blocks);
@@ -561,6 +871,7 @@ static int command_stat(const char *image_path, const char *udf_path)
     }
 
     udfread_file_close(file);
+    free(resolved_path);
     close_image(&image);
     return EXIT_OK;
 }
@@ -647,10 +958,11 @@ static int copy_file_bytes(UDFFILE *file, FILE *output, uint64_t bytes)
 }
 
 static int copy_range(const char *image_path, const char *udf_path,
-    uint64_t offset, bool length_given, uint64_t requested_length,
-    const char *output_path)
+    bool ignore_case, uint64_t offset, bool length_given,
+    uint64_t requested_length, const char *output_path)
 {
     struct image_handle image;
+    char *resolved_path;
     UDFFILE *file;
     int64_t signed_size;
     uint64_t size;
@@ -663,8 +975,16 @@ static int copy_range(const char *image_path, const char *udf_path,
     if (result != EXIT_OK)
         return result;
 
-    file = udfread_file_open(image.volume, udf_path);
+    result = resolve_udf_path(image.volume, udf_path, ignore_case,
+        &resolved_path);
+    if (result != EXIT_OK) {
+        close_image(&image);
+        return result;
+    }
+
+    file = udfread_file_open(image.volume, resolved_path);
     if (file == NULL) {
+        free(resolved_path);
         close_image(&image);
         return runtime_error_path("failed to open UDF file", udf_path);
     }
@@ -672,6 +992,7 @@ static int copy_range(const char *image_path, const char *udf_path,
     signed_size = udfread_file_size(file);
     if (signed_size < 0) {
         udfread_file_close(file);
+        free(resolved_path);
         close_image(&image);
         return runtime_error_path("failed to get file size", udf_path);
     }
@@ -679,6 +1000,7 @@ static int copy_range(const char *image_path, const char *udf_path,
 
     if (offset > size || offset > INT64_MAX) {
         udfread_file_close(file);
+        free(resolved_path);
         close_image(&image);
         return runtime_error("range offset exceeds the file size");
     }
@@ -686,6 +1008,7 @@ static int copy_range(const char *image_path, const char *udf_path,
     length = length_given ? requested_length : size - offset;
     if (length > size - offset) {
         udfread_file_close(file);
+        free(resolved_path);
         close_image(&image);
         return runtime_error("requested range exceeds the file size");
     }
@@ -693,6 +1016,7 @@ static int copy_range(const char *image_path, const char *udf_path,
     if (udfread_file_seek(file, (int64_t)offset, UDF_SEEK_SET) != (int64_t)offset ||
         udfread_file_tell(file) != (int64_t)offset) {
         udfread_file_close(file);
+        free(resolved_path);
         close_image(&image);
         return runtime_error("failed to seek within the UDF file");
     }
@@ -700,6 +1024,7 @@ static int copy_range(const char *image_path, const char *udf_path,
     output = open_output(output_path, &must_close);
     if (output == NULL) {
         udfread_file_close(file);
+        free(resolved_path);
         close_image(&image);
         return EXIT_FAILURE_RUNTIME;
     }
@@ -709,12 +1034,14 @@ static int copy_range(const char *image_path, const char *udf_path,
         result = EXIT_FAILURE_RUNTIME;
 
     udfread_file_close(file);
+    free(resolved_path);
     close_image(&image);
     return result;
 }
 
 static int command_range(int argc, char **argv)
 {
+    bool ignore_case = false;
     const char *output_path = "-";
     int index = 2;
     int remaining;
@@ -722,16 +1049,27 @@ static int command_range(int argc, char **argv)
     uint64_t length = 0;
     bool length_given;
 
-    if (index < argc && (strcmp(argv[index], "-o") == 0 ||
-            strcmp(argv[index], "--output") == 0)) {
-        if (index + 1 >= argc)
-            return usage_error("range output option requires a path");
-        output_path = argv[index + 1];
-        index += 2;
+    while (index < argc && argv[index][0] == '-') {
+        if (strcmp(argv[index], "--") == 0) {
+            index++;
+            break;
+        }
+        if (strcmp(argv[index], "-i") == 0 ||
+            strcmp(argv[index], "--ignore-case") == 0) {
+            ignore_case = true;
+            index++;
+            continue;
+        }
+        if (strcmp(argv[index], "-o") == 0 ||
+            strcmp(argv[index], "--output") == 0) {
+            if (index + 1 >= argc)
+                return usage_error("range output option requires a path");
+            output_path = argv[index + 1];
+            index += 2;
+            continue;
+        }
+        return usage_error("unknown range option");
     }
-
-    if (index < argc && strcmp(argv[index], "--") == 0)
-        index++;
 
     remaining = argc - index;
     if (remaining < 3 || remaining > 4)
@@ -744,7 +1082,7 @@ static int command_range(int argc, char **argv)
     if (length_given && !parse_u64(argv[index + 3], &length))
         return usage_error("invalid range length");
 
-    return copy_range(argv[index], argv[index + 1], offset,
+    return copy_range(argv[index], argv[index + 1], ignore_case, offset,
         length_given, length, output_path);
 }
 
@@ -767,9 +1105,14 @@ static void print_map_run(uint32_t file_block, uint32_t lba,
     printf("%" PRIu64 "\t%" PRIu64 "\n", run_blocks, run_bytes);
 }
 
-static int command_map(const char *image_path, const char *udf_path)
+static int command_map(int argc, char **argv)
 {
+    bool ignore_case;
+    int index = 2;
     struct image_handle image;
+    const char *image_path;
+    const char *udf_path;
+    char *resolved_path;
     UDFFILE *file;
     int64_t signed_size;
     uint64_t size;
@@ -781,12 +1124,30 @@ static int command_map(const char *image_path, const char *udf_path)
     uint64_t run_blocks;
     int result;
 
+    result = parse_ignore_case_options(argc, argv, &index, &ignore_case, "map");
+    if (result != EXIT_OK)
+        return result;
+
+    if (argc - index != 2)
+        return usage_error("map expects IMAGE and PATH");
+
+    image_path = argv[index];
+    udf_path = argv[index + 1];
+
     result = open_image(&image, image_path);
     if (result != EXIT_OK)
         return result;
 
-    file = udfread_file_open(image.volume, udf_path);
+    result = resolve_udf_path(image.volume, udf_path, ignore_case,
+        &resolved_path);
+    if (result != EXIT_OK) {
+        close_image(&image);
+        return result;
+    }
+
+    file = udfread_file_open(image.volume, resolved_path);
     if (file == NULL) {
+        free(resolved_path);
         close_image(&image);
         return runtime_error_path("failed to open UDF file", udf_path);
     }
@@ -794,6 +1155,7 @@ static int command_map(const char *image_path, const char *udf_path)
     signed_size = udfread_file_size(file);
     if (signed_size < 0) {
         udfread_file_close(file);
+        free(resolved_path);
         close_image(&image);
         return runtime_error_path("failed to get file size", udf_path);
     }
@@ -802,6 +1164,7 @@ static int command_map(const char *image_path, const char *udf_path)
     block_count = (size + UDF_BLOCK_SIZE - 1U) / UDF_BLOCK_SIZE;
     if (block_count > UINT32_MAX) {
         udfread_file_close(file);
+        free(resolved_path);
         close_image(&image);
         return runtime_error("file is too large for libudfread's 32-bit block mapping API");
     }
@@ -809,6 +1172,7 @@ static int command_map(const char *image_path, const char *udf_path)
     printf("FILE_BLOCK\tFILE_OFFSET\tLBA\tIMAGE_OFFSET\tBLOCKS\tBYTES\n");
     if (block_count == 0) {
         udfread_file_close(file);
+        free(resolved_path);
         close_image(&image);
         return EXIT_OK;
     }
@@ -844,17 +1208,23 @@ static int command_map(const char *image_path, const char *udf_path)
     print_map_run(run_file_block, run_lba, run_blocks, size);
 
     udfread_file_close(file);
+    free(resolved_path);
     close_image(&image);
     return EXIT_OK;
 }
 
 static int command_blocks(int argc, char **argv)
 {
+    bool ignore_case;
+    int index = 2;
     uint64_t first_block_value;
     uint64_t count_value = 1;
     uint32_t first_block;
     uint32_t count;
     struct image_handle image;
+    const char *image_path;
+    const char *udf_path;
+    char *resolved_path;
     UDFFILE *file;
     int64_t signed_size;
     uint64_t available_blocks;
@@ -863,32 +1233,50 @@ static int command_blocks(int argc, char **argv)
     uint32_t remaining;
     int result;
 
-    if (argc < 5 || argc > 6)
+    result = parse_ignore_case_options(argc, argv, &index, &ignore_case,
+        "blocks");
+    if (result != EXIT_OK)
+        return result;
+
+    if (argc - index < 3 || argc - index > 4)
         return usage_error("blocks expects IMAGE PATH FILE_BLOCK and an optional COUNT");
 
-    if (!parse_u64(argv[4], &first_block_value) || first_block_value > UINT32_MAX)
+    if (!parse_u64(argv[index + 2], &first_block_value) ||
+        first_block_value > UINT32_MAX)
         return usage_error("invalid first file block");
-    if (argc == 6 && (!parse_u64(argv[5], &count_value) || count_value > UINT32_MAX))
+    if (argc - index == 4 &&
+        (!parse_u64(argv[index + 3], &count_value) || count_value > UINT32_MAX))
         return usage_error("invalid block count");
 
     first_block = (uint32_t)first_block_value;
     count = (uint32_t)count_value;
+    image_path = argv[index];
+    udf_path = argv[index + 1];
 
-    result = open_image(&image, argv[2]);
+    result = open_image(&image, image_path);
     if (result != EXIT_OK)
         return result;
 
-    file = udfread_file_open(image.volume, argv[3]);
-    if (file == NULL) {
+    result = resolve_udf_path(image.volume, udf_path, ignore_case,
+        &resolved_path);
+    if (result != EXIT_OK) {
         close_image(&image);
-        return runtime_error_path("failed to open UDF file", argv[3]);
+        return result;
+    }
+
+    file = udfread_file_open(image.volume, resolved_path);
+    if (file == NULL) {
+        free(resolved_path);
+        close_image(&image);
+        return runtime_error_path("failed to open UDF file", udf_path);
     }
 
     signed_size = udfread_file_size(file);
     if (signed_size < 0) {
         udfread_file_close(file);
+        free(resolved_path);
         close_image(&image);
-        return runtime_error_path("failed to get file size", argv[3]);
+        return runtime_error_path("failed to get file size", udf_path);
     }
 
     available_blocks = ((uint64_t)signed_size + UDF_BLOCK_SIZE - 1U) /
@@ -896,6 +1284,7 @@ static int command_blocks(int argc, char **argv)
     if ((uint64_t)first_block > available_blocks ||
         (uint64_t)count > available_blocks - (uint64_t)first_block) {
         udfread_file_close(file);
+        free(resolved_path);
         close_image(&image);
         return runtime_error("requested logical blocks exceed the file");
     }
@@ -903,6 +1292,7 @@ static int command_blocks(int argc, char **argv)
     buffer = malloc(512U * UDF_BLOCK_SIZE);
     if (buffer == NULL) {
         udfread_file_close(file);
+        free(resolved_path);
         close_image(&image);
         return runtime_error("out of memory");
     }
@@ -940,8 +1330,44 @@ static int command_blocks(int argc, char **argv)
 
     free(buffer);
     udfread_file_close(file);
+    free(resolved_path);
     close_image(&image);
     return result;
+}
+
+static int command_cat(int argc, char **argv)
+{
+    bool ignore_case;
+    int index = 2;
+    int result;
+
+    result = parse_ignore_case_options(argc, argv, &index, &ignore_case, "cat");
+    if (result != EXIT_OK)
+        return result;
+
+    if (argc - index != 2)
+        return usage_error("cat expects IMAGE and PATH");
+
+    return copy_range(argv[index], argv[index + 1], ignore_case, 0, false, 0,
+        "-");
+}
+
+static int command_extract(int argc, char **argv)
+{
+    bool ignore_case;
+    int index = 2;
+    int result;
+
+    result = parse_ignore_case_options(argc, argv, &index, &ignore_case,
+        "extract");
+    if (result != EXIT_OK)
+        return result;
+
+    if (argc - index != 3)
+        return usage_error("extract expects IMAGE PATH and DESTINATION");
+
+    return copy_range(argv[index], argv[index + 1], ignore_case, 0, false, 0,
+        argv[index + 2]);
 }
 
 int main(int argc, char **argv)
@@ -974,32 +1400,20 @@ int main(int argc, char **argv)
     if (strcmp(command, "ls") == 0)
         return command_ls(argc, argv);
 
-    if (strcmp(command, "stat") == 0) {
-        if (argc != 4)
-            return usage_error("stat expects IMAGE and PATH");
-        return command_stat(argv[2], argv[3]);
-    }
+    if (strcmp(command, "stat") == 0)
+        return command_stat(argc, argv);
 
-    if (strcmp(command, "cat") == 0) {
-        if (argc != 4)
-            return usage_error("cat expects IMAGE and PATH");
-        return copy_range(argv[2], argv[3], 0, false, 0, "-");
-    }
+    if (strcmp(command, "cat") == 0)
+        return command_cat(argc, argv);
 
-    if (strcmp(command, "extract") == 0) {
-        if (argc != 5)
-            return usage_error("extract expects IMAGE PATH and DESTINATION");
-        return copy_range(argv[2], argv[3], 0, false, 0, argv[4]);
-    }
+    if (strcmp(command, "extract") == 0)
+        return command_extract(argc, argv);
 
     if (strcmp(command, "range") == 0)
         return command_range(argc, argv);
 
-    if (strcmp(command, "map") == 0) {
-        if (argc != 4)
-            return usage_error("map expects IMAGE and PATH");
-        return command_map(argv[2], argv[3]);
-    }
+    if (strcmp(command, "map") == 0)
+        return command_map(argc, argv);
 
     if (strcmp(command, "blocks") == 0)
         return command_blocks(argc, argv);
