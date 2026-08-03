@@ -14,6 +14,8 @@ CHECKSUM = ROOT / "fixture.iso.sha256"
 EXPECTED = ROOT / "expected"
 
 HELLO_CONTENT = b"Hello from the UDF fixture.\n"
+UPPER_CASE_CONTENT = b"Upper-case exact match.\n"
+LOWER_CASE_CONTENT = b"Lower-case exact match.\n"
 NESTED_CONTENT = bytes(((index * 37 + 11) & 0xFF) for index in range(6144))
 
 
@@ -176,6 +178,8 @@ def create_image() -> bytes:
         create_fid("hello.txt", 2),
         create_fid("empty.txt", 3),
         create_fid("nested", 4, is_directory=True),
+        create_fid("Case.txt", 6),
+        create_fid("case.txt", 7),
     ))
     write_block(
         PARTITION_START + 1,
@@ -199,6 +203,14 @@ def create_image() -> bytes:
         PARTITION_START + 5,
         create_file_entry(5, len(NESTED_CONTENT), data_lba=10),
     )
+    write_block(
+        PARTITION_START + 6,
+        create_file_entry(5, len(UPPER_CASE_CONTENT), UPPER_CASE_CONTENT),
+    )
+    write_block(
+        PARTITION_START + 7,
+        create_file_entry(5, len(LOWER_CASE_CONTENT), LOWER_CASE_CONTENT),
+    )
 
     data_offset = (PARTITION_START + 10) * BLOCK_SIZE
     image[data_offset:data_offset + len(NESTED_CONTENT)] = NESTED_CONTENT
@@ -209,6 +221,8 @@ def create_image() -> bytes:
 def main() -> None:
     EXPECTED.mkdir(parents=True, exist_ok=True)
     EXPECTED.joinpath("hello.txt").write_bytes(HELLO_CONTENT)
+    EXPECTED.joinpath("upper-case.txt").write_bytes(UPPER_CASE_CONTENT)
+    EXPECTED.joinpath("lower-case.txt").write_bytes(LOWER_CASE_CONTENT)
     EXPECTED.joinpath("nested.bin").write_bytes(NESTED_CONTENT)
 
     image = create_image()
