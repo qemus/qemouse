@@ -67,6 +67,39 @@ grep -Fxq \
   "First LBA: 280" \
   "$work/stat.txt"
 
+if "$binary" stat \
+    "$fixture" \
+    /NESTED/DATA.BIN \
+    > "$work/stat-sensitive.txt" \
+    2> "$work/stat-sensitive.err"; then
+  echo "ERROR: Case-sensitive lookup unexpectedly succeeded." >&2
+  exit 1
+fi
+
+grep -Fxq \
+  "udfread: path not found: /NESTED/DATA.BIN" \
+  "$work/stat-sensitive.err"
+
+"$binary" stat \
+  --ignore-case \
+  "$fixture" \
+  /NESTED/DATA.BIN \
+  > "$work/stat-insensitive.txt"
+
+grep -Fxq \
+  "Path: /nested/data.bin" \
+  "$work/stat-insensitive.txt"
+
+"$binary" ls \
+  -i \
+  "$fixture" \
+  /NESTED \
+  > "$work/list-insensitive.txt"
+
+grep -Fxq \
+  "/nested/data.bin" \
+  "$work/list-insensitive.txt"
+
 "$binary" cat \
   "$fixture" \
   /hello.txt \
@@ -75,6 +108,50 @@ grep -Fxq \
 cmp \
   "$expected/hello.txt" \
   "$work/hello.txt"
+
+"$binary" cat \
+  --ignore-case \
+  "$fixture" \
+  /HELLO.TXT \
+  > "$work/hello-insensitive.txt"
+
+cmp \
+  "$expected/hello.txt" \
+  "$work/hello-insensitive.txt"
+
+"$binary" cat \
+  -i \
+  "$fixture" \
+  /Case.txt \
+  > "$work/upper-case.txt"
+
+cmp \
+  "$expected/upper-case.txt" \
+  "$work/upper-case.txt"
+
+"$binary" cat \
+  -i \
+  "$fixture" \
+  /case.txt \
+  > "$work/lower-case.txt"
+
+cmp \
+  "$expected/lower-case.txt" \
+  "$work/lower-case.txt"
+
+if "$binary" cat \
+    -i \
+    "$fixture" \
+    /CASE.TXT \
+    > "$work/ambiguous.txt" \
+    2> "$work/ambiguous.err"; then
+  echo "ERROR: Ambiguous case-insensitive lookup unexpectedly succeeded." >&2
+  exit 1
+fi
+
+grep -Fxq \
+  "udfread: ambiguous case-insensitive path component 'CASE.TXT' in '/'" \
+  "$work/ambiguous.err"
 
 "$binary" cat \
   "$fixture" \
@@ -91,6 +168,16 @@ test ! -s "$work/empty.txt"
 cmp \
   "$expected/nested.bin" \
   "$work/nested.bin"
+
+"$binary" extract \
+  -i \
+  "$fixture" \
+  /NESTED/DATA.BIN \
+  "$work/nested-insensitive.bin"
+
+cmp \
+  "$expected/nested.bin" \
+  "$work/nested-insensitive.bin"
 
 "$binary" range \
   -o "$work/range.bin" \
@@ -111,6 +198,18 @@ cmp \
   "$work/expected-range.bin" \
   "$work/range.bin"
 
+"$binary" range \
+  -o "$work/range-insensitive.bin" \
+  -i \
+  "$fixture" \
+  /NESTED/DATA.BIN \
+  1900 \
+  500
+
+cmp \
+  "$work/expected-range.bin" \
+  "$work/range-insensitive.bin"
+
 "$binary" map \
   "$fixture" \
   /nested/data.bin \
@@ -123,6 +222,16 @@ grep -Fxq \
 grep -Fxq \
   $'0\t0\t280\t573440\t3\t6144' \
   "$work/map.txt"
+
+"$binary" map \
+  -i \
+  "$fixture" \
+  /NESTED/DATA.BIN \
+  > "$work/map-insensitive.txt"
+
+cmp \
+  "$work/map.txt" \
+  "$work/map-insensitive.txt"
 
 "$binary" blocks \
   "$fixture" \
@@ -141,5 +250,17 @@ dd \
 cmp \
   "$work/expected-blocks.bin" \
   "$work/blocks.bin"
+
+"$binary" blocks \
+  -i \
+  "$fixture" \
+  /NESTED/DATA.BIN \
+  0 \
+  2 \
+  > "$work/blocks-insensitive.bin"
+
+cmp \
+  "$work/expected-blocks.bin" \
+  "$work/blocks-insensitive.bin"
 
 echo "All UDF fixture tests passed."
