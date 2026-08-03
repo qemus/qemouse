@@ -44,6 +44,19 @@ udfread range -o install.xml windows.iso /sources/install.wim "$xml_offset" "$xm
 
 Numbers may be decimal or hexadecimal with a `0x` prefix.
 
+Use `-i` or `--ignore-case` with any command that accepts a UDF path to
+resolve each path component using ASCII case-insensitive matching:
+
+```bash
+udfread stat -i windows.iso /SOURCES/INSTALL.WIM
+udfread range -i -o wim-header.bin windows.iso /SOURCES/INSTALL.WIM 0 208
+```
+
+An exact component match always takes precedence. If no exact match exists and
+multiple entries differ only by ASCII letter case, the lookup fails as
+ambiguous instead of selecting an entry arbitrarily. Output such as `stat` and
+`ls` uses the actual path spelling stored in the image.
+
 ## Install a release package
 
 Download the package matching the host architecture from the latest GitHub
