@@ -1,0 +1,31 @@
+diff --git a/src/udfread.c b/src/udfread.c
+index 5bfbc1c..e2ba590 100644
+--- a/src/udfread.c
++++ b/src/udfread.c
+@@ -437,7 +437,7 @@ next_extent:
+ 
+         case ECMA_TerminatingDescriptor:
+             udf_trace("Terminating Descriptor in lba %u\n", lba);
+-            return (have_part && have_lvd) ? 0 : -1;
++            return (have_part && have_lvd && have_pvd) ? 0 : -1;
+         }
+ 
+         if (have_part && have_lvd && have_pvd) {
+@@ -446,7 +446,7 @@ next_extent:
+         }
+     }
+ 
+-    return (have_part && have_lvd) ? 0 : -1;
++    return (have_part && have_lvd && have_pvd) ? 0 : -1;
+ }
+ 
+ static int _read_vds(udfread_block_input *input, int part_number,
+@@ -1219,7 +1219,7 @@ int udfread_open_input(udfread *udf, udfread_block_input *input/*, int partition
+     }
+ 
+     /* read Volume Descriptor Sequence */
+-    if (_read_vds(input, 0, &vds) < 0) {
++    if (_read_vds(input, -1, &vds) < 0) {
+         return -1;
+     }
+ 
