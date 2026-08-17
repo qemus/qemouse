@@ -47,6 +47,8 @@ static uint16_t mousex, mousey;
 static bool mouseposvalid;
 /** Existing interrupt2f handler. */
 static LPFN prev_int2f_handler;
+/** Last result of the temporary exported-entry VMware GETVERSION probe. */
+static volatile int32_t diagnostic_vmware_version;
 
 /* This is how events are delivered to Windows. */
 
@@ -57,6 +59,12 @@ static void send_event(unsigned short Status, short deltaX, short deltaY, short 
 /* VMware/QEMU absolute mouse helpers. */
 
 #pragma code_seg ( "CALLBACKS" )
+
+/** Temporary diagnostic: force one raw VMware GETVERSION backdoor access. */
+static void __far vmware_diagnostic_probe(void)
+{
+	diagnostic_vmware_version = vmware_get_version();
+}
 
 static bool __far vmware_detect(void)
 {
@@ -381,6 +389,8 @@ BOOL FAR PASCAL LibMain(HINSTANCE hInstance, WORD wDataSegment,
 /** Called by Windows to retrieve information about the mouse hardware. */
 WORD FAR PASCAL Inquire(LPMOUSEINFO lpMouseInfo)
 {
+	vmware_diagnostic_probe();
+
 	lpMouseInfo->msExist = 1;
 	lpMouseInfo->msRelative = mouseflags & MOUSEFLAGS_HAS_VMWARE ? 0 : 1;
 	lpMouseInfo->msNumButtons = MOUSE_NUM_BUTTONS;
@@ -392,6 +402,8 @@ WORD FAR PASCAL Inquire(LPMOUSEINFO lpMouseInfo)
   * @param lpEventProc Callback function to call when a mouse event happens. */
 VOID FAR PASCAL Enable(LPFN_MOUSEEVENT lpEventProc)
 {
+	vmware_diagnostic_probe();
+
 	/* Store the Windows-given callback. */
 	cli(); /* Write to far pointer may not be atomic, and we could be interrupted mid-write. */
 	eventproc = lpEventProc;
