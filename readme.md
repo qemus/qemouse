@@ -44,39 +44,6 @@ For an existing Windows installation, place `qemouse.inf` and `qemouse.drv` in t
 
 Right-click `qemouse.inf` and choose **Install**, then reboot Windows.
 
-The installer copies:
-
-    qemouse.drv
-
-to the Windows `SYSTEM` directory and selects it through:
-
-    [boot]
-    mouse.drv=qemouse.drv
-
-The existing `[386Enh]` mouse configuration is intentionally left unchanged.
-
-QEMouse works together with Windows' native enhanced-mode mouse stack. Do not replace or remove `MSMOUSE.VXD`, VMOUSE, VMD, or other Windows mouse VxDs.
-
-To uninstall QEMouse manually, restore:
-
-    [boot]
-    mouse.drv=mouse.drv
-
-in `SYSTEM.INI` and reboot.
-
-### Manual installation
-
-QEMouse can also be installed without the INF file.
-
-Copy `qemouse.drv` to the Windows `SYSTEM` directory and set:
-
-    [boot]
-    mouse.drv=qemouse.drv
-
-in `SYSTEM.INI`.
-
-Leave the existing `[386Enh]` `mouse=` entry unchanged, then reboot Windows.
-
 ### Windows 3.x
 
 Copy `qemouse.drv` to the Windows `SYSTEM` directory and set:
@@ -85,28 +52,6 @@ Copy `qemouse.drv` to the Windows `SYSTEM` directory and set:
     mouse.drv=qemouse.drv
 
 in `SYSTEM.INI`, then restart Windows.
-
-### Unattended Windows 9x installation
-
-`qemouse.inf` is intended for installation after Windows Setup has completed.
-
-When integrating QEMouse directly into Windows 9x installation media, let Windows install and configure its normal mouse stack and install the QEMouse binary under the standard name:
-
-    MOUSE.DRV
-
-in the Windows `SYSTEM` directory.
-
-Windows can then retain its normal configuration, for example on Windows 98:
-
-    [boot]
-    mouse.drv=mouse.drv
-
-    [386Enh]
-    mouse=*vmouse, msmouse.vxd
-
-while the file named `MOUSE.DRV` is the QEMouse driver.
-
-This avoids interfering with Windows Setup's own mouse-device configuration.
 
 ## QEMU configuration 🖥️
 
