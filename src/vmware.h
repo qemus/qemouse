@@ -81,6 +81,15 @@ struct vmware_abspointer_data {
 
 #define VMWARE_ABSPOINTER_DATA_PACKET_SIZE 4
 
+/*
+ * VMware backdoor commands normally return extra values through EBX/ECX/EDX
+ * as side effects of an IN instruction.  On the QEMU/KVM + Win9x path we have
+ * observed GETVERSION reach QEMU correctly while its returned EBX magic does
+ * not survive back to this Win16 caller.  Remember that condition so vmmouse
+ * packet reads can use only the architectural IN result in EAX.
+ */
+static uint8_t vmware_eax_only_returns;
+
 #pragma code_seg ( "CALLBACKS" )
 
 static inline void vmware_call(struct vmware_call_regs __far * regs);
@@ -109,9 +118,24 @@ static int32_t vmware_get_version(void)
 	regs.command = VMWARE_CMD_GETVERSION;
 	regs.ebx = ~VMWARE_MAGIC;
 	vmware_call(&regs);
-	if (regs.ebx != VMWARE_MAGIC) {
-		return -1;
+
+	if (regs.ebx == VMWARE_MAGIC) {
+		/* Normal VMware-style return path: all output registers survived. */
+		vmware_eax_only_returns = 0;
+	} else {
+		/*
+		 * QEMU/KVM can still return GETVERSION through EAX even when the
+		 * VMware-specific EBX side effect is lost on the way back to Win16.
+		 * Historical GETVERSION values are 0..6.  Keep this fallback narrow;
+		 * vmware_detect() also probes the actual vmmouse command/status
+		 * interface before absolute input is advertised.
+		 */
+		if (regs.eax > 6) {
+			return -1;
+		}
+		vmware_eax_only_returns = 1;
 	}
+
 	return regs.eax;
 }
 
@@ -151,15 +175,43 @@ static uint32_t vmware_abspointer_status(void)
  *     VMWARE_ABSPOINTER_STATUS_MASK_DATA bits: amount of data available to read. */
 static void vmware_abspointer_data(unsigned size, struct vmware_abspointer_data __far * data)
 {
-	union u {
-		struct vmware_call_regs regs;
-		struct vmware_abspointer_data data;
-	} __far *p = (union u __far *) data;
-	p->regs.magic = VMWARE_MAGIC;
-	p->regs.port = VMWARE_PORT;
-	p->regs.command = VMWARE_CMD_ABSPOINTER_DATA;
-	p->regs.size = size;
-	vmware_call(&p->regs);
+	if (!vmware_eax_only_returns) {
+		/* VMware's native path returns up to four words in EAX/EBX/ECX/EDX. */
+		union u {
+			struct vmware_call_regs regs;
+			struct vmware_abspointer_data data;
+		} __far *p = (union u __far *) data;
+		p->regs.magic = VMWARE_MAGIC;
+		p->regs.port = VMWARE_PORT;
+		p->regs.command = VMWARE_CMD_ABSPOINTER_DATA;
+		p->regs.size = size;
+		vmware_call(&p->regs);
+		return;
+	}
+
+	/*
+	 * QEMU removes exactly the requested number of dwords from the vmmouse
+	 * queue.  Request one dword per call so status, X, Y and Z each return
+	 * through EAX; this avoids depending on returned EBX/ECX/EDX entirely.
+	 */
+	{
+		uint32_t __far *out = (uint32_t __far *) data;
+		unsigned i;
+
+		if (size > VMWARE_ABSPOINTER_DATA_PACKET_SIZE) {
+			size = VMWARE_ABSPOINTER_DATA_PACKET_SIZE;
+		}
+
+		for (i = 0; i < size; ++i) {
+			struct vmware_call_regs regs;
+			regs.magic = VMWARE_MAGIC;
+			regs.port = VMWARE_PORT;
+			regs.command = VMWARE_CMD_ABSPOINTER_DATA;
+			regs.size = 1;
+			vmware_call(&regs);
+			out[i] = regs.eax;
+		}
+	}
 }
 
 /** Reads (and discards) all available data in the VMware absolute pointing interface. */
