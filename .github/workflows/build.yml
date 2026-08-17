@@ -8,7 +8,7 @@ permissions:
 
 jobs:
   build:
-    name: QEMouse
+    name: Build
     runs-on: ubuntu-24.04
 
     steps:
@@ -67,6 +67,18 @@ jobs:
           test -s qemouse.drv
 
       -
+        name: Create package
+        if: steps.checkTag.outputs.exists == 'false'
+        run: |
+          set -Eeuo pipefail
+
+          python3 -m zipfile -c qemouse.zip \
+            qemouse.drv \
+            oemsetup.inf
+
+          test -s qemouse.zip
+
+      -
         name: Create a release
         if: steps.checkTag.outputs.exists == 'false'
         uses: action-pack/github-release@v2
@@ -81,7 +93,7 @@ jobs:
         if: steps.checkTag.outputs.exists == 'false'
         uses: AButler/upload-release-assets@v4.0.0
         with:
-          files: "qemouse.drv;oemsetup.inf"
+          files: "qemouse.zip"
           release-tag: "${{ env.tag }}"
           repo-token: ${{ secrets.REPO_ACCESS_TOKEN }}
 
