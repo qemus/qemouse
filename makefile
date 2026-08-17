@@ -1,25 +1,24 @@
-# This is an Open Watcom wmake makefile, not GNU make.
-# Assuming you have sourced `owsetenv` beforehand.
+# Open Watcom wmake makefile.
+# The Open Watcom environment must already be configured for the Windows target.
 
-.BEFORE:
-	# We need DOS and Windows headers, not host platform's
-	set include=$(%watcom)/h/win;$(%watcom)/h
+DRIVER  = qemouse.drv
+SOURCE  = src/mousew16.c
+HEADERS = src/mousew16.h src/vmware.h src/ps2.h src/int2fwin.h
 
-# The main driver file
-qemouse.drv: mousew16.c mousew16.h vmware.h ps2.h int2fwin.h
-	# -bd to build DLL
-	# -mc to use compact memory model (far data pointers, since ss != ds)
-	# -zu for DLL calling convention (ss != ds)
-	# -zc put constants on the code segment (cs)
-	# -s to disable stack checks, since the runtime uses MessageBox() to abort (which we can't call from mouse.drv)
-	wcl -6 -mc -bd -zu -zc -s -bt=windows -l=windows_dll @qemouse.lnk -fe=$^@ mousew16.c
+$(DRIVER): $(SOURCE) $(HEADERS) qemouse.lnk
+	# -bd builds a DLL/driver
+	# -mc uses the compact memory model (far data pointers, since SS != DS)
+	# -zu uses the DLL calling convention (SS != DS)
+	# -zc places constants in the code segment (CS)
+	# -s disables stack checks; the runtime abort path is unsuitable for mouse.drv
+	wcl -6 -mc -bd -zu -zc -s -bt=windows -l=windows_dll @qemouse.lnk -fe=$^@ $(SOURCE)
 
 clean: .SYMBOLIC
-	rm -f qemouse.drv qemouse.flp *.o
+	rm -f qemouse.drv qemouse.flp *.o *.obj src/*.o src/*.obj
 
 qemouse.flp:
 	mformat -C -f 1440 -v QEMOUSE -i $^@ ::
 
-# Build a floppy image containing the driver
+# Build a floppy image containing the driver and OEM setup file.
 flp: qemouse.flp qemouse.drv oemsetup.inf .SYMBOLIC
 	mcopy -i qemouse.flp -o oemsetup.inf qemouse.drv ::
