@@ -10,7 +10,7 @@
 
 </div></h1>
 
-QEMouse is a small Windows 3.x / Windows 9x mouse driver for QEMU's `vmmouse` implementation.
+QEMouse is a small Windows 9x mouse driver for QEMU's `vmmouse` implementation.
 
 It uses QEMU's VMware-compatible backdoor protocol to obtain absolute pointer coordinates while retaining the PS/2 interrupt path as the notification source.
 
