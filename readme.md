@@ -1,6 +1,6 @@
 <h1 align="center">QEMOUSE<br />
 <div align="center">
-<a href="https://github.com/qemus/qemouse"><img src="https://raw.githubusercontent.com/qemu/qemouse/master/.github/logo.png" title="Logo" style="max-width:100%;" width="128" /></a>
+<a href="https://github.com/qemus/qemouse"><img src="https://raw.githubusercontent.com/qemus/qemouse/master/.github/logo.png" title="Logo" style="max-width:100%;" width="128" /></a>
 </div>
 <div align="center">
   
