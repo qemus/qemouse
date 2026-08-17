@@ -1,5 +1,6 @@
 /*
  * QEMouse - Routines to access the PS/2 BIOS services
+ * Derived from VBMouse by Javier S. Pedro.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
