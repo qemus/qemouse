@@ -56,7 +56,9 @@ static void send_event(unsigned short Status, short deltaX, short deltaY, short 
 
 /* VMware/QEMU absolute mouse helpers. */
 
-static bool vmware_detect(void)
+#pragma code_seg ( "CALLBACKS" )
+
+static bool __far vmware_detect(void)
 {
 	uint32_t status;
 
@@ -80,7 +82,7 @@ static bool vmware_detect(void)
 	return true;
 }
 
-static bool vmware_enable_absolute(void)
+static bool __far vmware_enable_absolute(void)
 {
 	uint32_t status;
 
@@ -98,14 +100,12 @@ static bool vmware_enable_absolute(void)
 	return true;
 }
 
-static void vmware_disable_absolute(void)
+static void __far vmware_disable_absolute(void)
 {
 	vmware_abspointer_cmd(VMWARE_ABSPOINTER_CMD_REQUEST_RELATIVE);
 	vmware_abspointer_cmd(VMWARE_ABSPOINTER_CMD_DISABLE);
 	mouseposvalid = false;
 }
-
-#pragma code_seg ( "CALLBACKS" )
 
 static void report_vmware_event(const struct vmware_abspointer_data __far *vmw)
 {
