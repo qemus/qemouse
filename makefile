@@ -1,11 +1,16 @@
 # Open Watcom wmake makefile.
 # The Open Watcom environment must already be configured for the Windows target.
 
+!ifndef VERSION
+VERSION = dev
+!endif
+
 DRIVER  = qemouse.drv
 SOURCE  = src/mousew16.c
 HEADERS = src/mousew16.h src/vmware.h src/ps2.h src/int2fwin.h
 
 $(DRIVER): $(SOURCE) $(HEADERS) qemouse.lnk
+	@echo Building QEMouse $(VERSION)
 	# -bd builds a DLL/driver
 	# -mc uses the compact memory model (far data pointers, since SS != DS)
 	# -zu uses the DLL calling convention (SS != DS)
