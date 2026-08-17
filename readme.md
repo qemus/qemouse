@@ -17,6 +17,7 @@ It uses QEMU's VMware-compatible backdoor protocol to obtain absolute pointer co
 ## Features ✨
 
 - QEMU absolute pointer coordinates
+- Supports Windows 3.11, 95, 98 and ME
 - Windows 386/VMD mouse type registration
 - Fullscreen/background switching through the existing INT 2F notification hook
 
