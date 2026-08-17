@@ -36,12 +36,6 @@ On each notification QEMouse:
 
 Draining the complete queue is intentional. QEMU can retain stale vmmouse packets if a fake PS/2 notification is missed; consuming all complete packets prevents the guest pointer from developing a permanent event backlog.
 
-The PS/2 callback wrapper explicitly preserves all 32-bit general registers and segment registers before calling C code. This is important on Windows 9x, where VMD and 32-bit display code may depend on the upper halves of 386 registers surviving IRQ12 callbacks.
-
-When running in Windows 386 enhanced mode, QEMouse registers its PS/2 interrupt path with the existing Windows Virtual Mouse Device (VMD).
-
-QEMouse is a Win16 `MOUSE.DRV`. It does not replace Windows' enhanced-mode mouse VxD stack.
-
 ## Installation 📦
 
 ### Windows 95 / 98 / ME
