@@ -60,6 +60,10 @@ To build a floppy image containing the driver and `oemsetup.inf`:
 
     wmake flp
 
+## Acknowledgements 🙏
+
+Special thanks to [Javier S. Pedro](https://javispedro.com/), this project would not exist without his invaluable work.
+
 ## Stars 🌟
 
 [![Stargazers](https://raw.githubusercontent.com/star-stats/stars/refs/heads/data/charts/qemus-qemouse.svg)](https://github.com/qemus/qemouse/stargazers)
