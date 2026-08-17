@@ -142,8 +142,6 @@ To build a 1.44 MB floppy image containing `qemouse.drv` and `qemouse.inf`:
 
 Special thanks to [Javier S. Pedro](https://javispedro.com/), this project would not exist without his invaluable work.
 
-QEMouse is derived from his VBMouse/VBADOS work and uses the same fundamental PS/2 BIOS callback architecture combined with VMware-compatible absolute mouse support.
-
 ## Stars 🌟
 
 [![Stargazers](https://raw.githubusercontent.com/star-stats/stars/refs/heads/data/charts/qemus-qemouse.svg)](https://github.com/qemus/qemouse/stargazers)
