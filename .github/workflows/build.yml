@@ -11,100 +11,97 @@ jobs:
     name: QEMouse
     runs-on: ubuntu-24.04
 
-    permissions:
-      actions: write
-      packages: write
-      contents: read
-
     steps:
       -
         name: Set version
+        env:
+          MAJOR: ${{ vars.MAJOR }}
+          MINOR: ${{ vars.MINOR }}
         run: |
           #!/usr/bin/env bash
           set -Eeuo pipefail
 
-          version="${{ vars.MAJOR }}.${{ vars.MINOR }}"
-
-          if [ -z "${{ vars.MAJOR }}" ] || [ -z "${{ vars.MINOR }}" ]; then
+          if [ -z "$MAJOR" ] || [ -z "$MINOR" ]; then
             echo "ERROR: MAJOR and MINOR repository variables must be set." >&2
             exit 1
           fi
 
+          version="${MAJOR}.${MINOR}"
+
           echo "version=$version" >> "$GITHUB_ENV"
+          echo "tag=v$version" >> "$GITHUB_ENV"
+
           echo "Building version: $version"
 
       -
-        name: Check if the tag exists locally
+        name: Check if the tag exists
         uses: action-pack/tag-exists@v1
         id: checkTag
         with:
-          tag: '${{ env.version }}'
-
-      -
-        name: Finish when found
-        run: |
-          #!/usr/bin/env bash
-          set -Eeuo pipefail
-
-          echo "exists=${{ steps.checkTag.outputs.exists }}" >> "$GITHUB_ENV"
+          tag: '${{ env.tag }}'
 
       -
         name: Checkout
-        if: env.exists == 'false'
+        if: steps.checkTag.outputs.exists == 'false'
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - name: Set up Open Watcom
-        if: env.exists == 'false'
+      -
+        name: Set up Open Watcom
+        if: steps.checkTag.outputs.exists == 'false'
         uses: open-watcom/setup-watcom@v1
         with:
           version: "2.0"
           target: "win"
 
-      - name: Build driver
-        if: env.exists == 'false'
+      -
+        name: Build driver
+        if: steps.checkTag.outputs.exists == 'false'
         run: |
-          set -euxo pipefail
+          set -Eeuo pipefail
+
           wmake clean
-          wmake qemouse.drv
+          wmake VERSION="$version" qemouse.drv
+
           test -s qemouse.drv
 
       -
         name: Create a release
-        if: env.exists == 'false'
+        if: steps.checkTag.outputs.exists == 'false'
         uses: action-pack/github-release@v2
         with:
-          tag: "v${{ env.version }}"
-          title: "v${{ env.version }}"
+          tag: "${{ env.tag }}"
+          title: "${{ env.tag }}"
+          commit: "${{ github.sha }}"
           token: ${{ secrets.REPO_ACCESS_TOKEN }}
 
       -
-        name: Update release
-        if: env.exists == 'false'
+        name: Upload release assets
+        if: steps.checkTag.outputs.exists == 'false'
         uses: AButler/upload-release-assets@v4.0.0
         with:
-          files: "qemouse.drv,oemsetup.inf"
-          release-tag: "v${{ env.version }}"
+          files: "qemouse.drv;oemsetup.inf"
+          release-tag: "${{ env.tag }}"
           repo-token: ${{ secrets.REPO_ACCESS_TOKEN }}
 
       -
         name: Increment version variable
-        if: env.exists == 'false'
+        if: steps.checkTag.outputs.exists == 'false'
         uses: action-pack/bump@v2
         with:
           token: ${{ secrets.REPO_ACCESS_TOKEN }}
 
       -
         name: Send mail
-        if: env.exists == 'false'
+        if: steps.checkTag.outputs.exists == 'false'
         uses: action-pack/send-mail@v1
         with:
           to: ${{ secrets.MAILTO }}
           from: Github Actions <${{ secrets.MAILTO }}>
           connection_url: ${{ secrets.MAIL_CONNECTION }}
-          subject: Build of ${{ github.event.repository.name }} v${{ env.version }} completed
+          subject: Build of ${{ github.event.repository.name }} ${{ env.tag }} completed
           body: |
-            The build job of ${{ github.event.repository.name }} v${{ env.version }} was completed successfully!
+            The build job of ${{ github.event.repository.name }} ${{ env.tag }} was completed successfully!
 
             See https://github.com/${{ github.repository }}/actions for more information.
