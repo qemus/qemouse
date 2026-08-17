@@ -1,16 +1,21 @@
 <h1 align="center">QEMouse<br />
 <div align="center">
-<a href="https://github.com/qemus/qemouse"><img src="https://raw.githubusercontent.com/qemus/qemouse/master/.github/logo.png" title="Logo" style="max-width:100%;" width="128" /></a>
-</div>
-<div align="center">
   
 [![Build]][build_url]
 [![Version]][release_url]
 [![Size]][release_url]
 
-</div>
+</div></h1>  
 
-QEMouse is a small Windows 3.x / Windows 9x mouse driver for QEMU's `vmmouse` implementation. It uses QEMU's VMware-compatible backdoor protocol to obtain absolute pointer coordinates while retaining the PS/2 interrupt path as the notification source.
+QEMouse is a small Windows 3.x / Windows 9x mouse driver for QEMU's `vmmouse` implementation.
+
+It uses QEMU's VMware-compatible backdoor protocol to obtain absolute pointer coordinates while retaining the PS/2 interrupt path as the notification source.
+
+## Features
+
+- QEMU absolute pointer coordinates
+- Windows 386/VMD mouse type registration
+- Fullscreen/background switching through the existing INT 2F notification hook
 
 ## Design
 
@@ -50,16 +55,6 @@ QEMouse uses Open Watcom and the Windows headers supplied with it. After loading
 To build a floppy image containing the driver and `oemsetup.inf`:
 
     wmake flp
-
-## Current scope
-
-- VMware/QEMU absolute pointer coordinates
-- Left and right mouse buttons
-- Plain PS/2 fallback
-- Windows 386/VMD mouse type registration
-- Fullscreen/background switching through the existing INT 2F notification hook
-
-Wheel and middle-button support are intentionally out of scope for the first QEMouse version.
 
 ## Stars 🌟
 
