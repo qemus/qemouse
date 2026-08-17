@@ -1,1 +1,5 @@
-
+*.o
+*.obj
+*.map
+qemouse.drv
+qemouse.flp
