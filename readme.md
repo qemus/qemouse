@@ -25,7 +25,7 @@ It uses QEMU's VMware-compatible backdoor protocol to obtain absolute pointer co
 
 ## Design 🧩
 
-QEMU's vmmouse implementation queues each host input event as four VMware backdoor words and generates a fake PS/2 mouse event to notify the guest. The PS/2 BIOS callback is therefore used only as a wakeup mechanism when VMware absolute mode is active.
+QEMU's `vmmouse` implementation queues each host input event as four VMware backdoor words and generates a fake PS/2 mouse event to notify the guest. The PS/2 BIOS callback is therefore used only as a wakeup mechanism when VMware absolute mode is active.
 
 On each notification QEMouse:
 
