@@ -1,8 +1,0 @@
-[data]
-    Version   = "3.0"
-
-[disks]
-    1 =., "QEMouse driver disk", disk1
-
-[pointing.device]
-    qemouse = 1:qemouse.drv, "QEMU Absolute PS/2 Mouse", x:*vmd, qemouse

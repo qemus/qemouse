@@ -1,0 +1,21 @@
+[Version]
+Signature="$CHICAGO$"
+
+[DefaultInstall]
+CopyFiles=QEMouse.Copy
+UpdateInis=QEMouse.SystemIni
+
+[DestinationDirs]
+QEMouse.Copy=11
+
+[QEMouse.Copy]
+qemouse.drv,,,4
+
+[QEMouse.SystemIni]
+%10%\system.ini,boot,"mouse.drv=*","mouse.drv=qemouse.drv"
+
+[SourceDisksNames]
+1="QEMouse installation files",,,
+
+[SourceDisksFiles]
+qemouse.drv=1
