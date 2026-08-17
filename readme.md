@@ -10,7 +10,7 @@
 
 </div></h1>
 
-QEMouse is a small Windows 9x mouse driver for QEMU's `vmmouse` implementation.
+QEMouse is a small Windows mouse driver for QEMU's `vmmouse` implementation.
 
 It uses QEMU's VMware-compatible backdoor protocol to obtain absolute pointer coordinates while retaining the PS/2 interrupt path as the notification source.
 
@@ -20,49 +20,129 @@ It uses QEMU's VMware-compatible backdoor protocol to obtain absolute pointer co
 - Supports Windows 3.11, 95, 98 and ME
 - Windows 386/VMD mouse type registration
 - Fullscreen/background switching through the existing INT 2F notification hook
+- Falls back to normal relative PS/2 input when the VMware-compatible interface is unavailable
+- Uses Windows' existing enhanced-mode mouse stack; no additional VxD is required
 
 ## Design 🧩
 
-QEMU's vmmouse implementation queues each host input event as four VMware backdoor words and generates a fake PS/2 mouse event to notify the guest. The PS/2 BIOS callback is therefore used only as a wakeup mechanism when VMware
-absolute mode is active.
+QEMU's vmmouse implementation queues each host input event as four VMware backdoor words and generates a fake PS/2 mouse event to notify the guest. The PS/2 BIOS callback is therefore used only as a wakeup mechanism when VMware absolute mode is active.
 
 On each notification QEMouse:
 
 1. Queries VMware absolute-pointer status.
 2. Drains every complete 4-word packet currently queued.
 3. Reports absolute coordinates directly to Windows using `SF_ABSOLUTE`.
-4. Converts VMware's current left/right button state into Windows button
-   transition events.
+4. Converts VMware's current left/right button state into Windows button transition events.
 
 Draining the complete queue is intentional. QEMU can retain stale vmmouse packets if a fake PS/2 notification is missed; consuming all complete packets prevents the guest pointer from developing a permanent event backlog.
 
-The PS/2 callback wrapper explicitly preserves all 32-bit general registers and segment registers before calling C code. This is important on Win9x, where VMD and 32-bit display code may depend on the upper halves of 386 registers surviving
-IRQ12 callbacks.
+The PS/2 callback wrapper explicitly preserves all 32-bit general registers and segment registers before calling C code. This is important on Windows 9x, where VMD and 32-bit display code may depend on the upper halves of 386 registers surviving IRQ12 callbacks.
+
+When running in Windows 386 enhanced mode, QEMouse registers its PS/2 interrupt path with the existing Windows Virtual Mouse Device (VMD).
+
+QEMouse is a Win16 `MOUSE.DRV`. It does not replace Windows' enhanced-mode mouse VxD stack.
 
 ## Installation 📦
+
+### Windows 95 / 98 / ME
+
+For an existing Windows installation, place `qemouse.inf` and `qemouse.drv` in the same directory.
+
+Right-click `qemouse.inf` and choose **Install**, then reboot Windows.
+
+The installer copies:
+
+    qemouse.drv
+
+to the Windows `SYSTEM` directory and selects it through:
+
+    [boot]
+    mouse.drv=qemouse.drv
+
+The existing `[386Enh]` mouse configuration is intentionally left unchanged.
+
+QEMouse works together with Windows' native enhanced-mode mouse stack. Do not replace or remove `MSMOUSE.VXD`, VMOUSE, VMD, or other Windows mouse VxDs.
+
+To uninstall QEMouse manually, restore:
+
+    [boot]
+    mouse.drv=mouse.drv
+
+in `SYSTEM.INI` and reboot.
+
+### Manual installation
+
+QEMouse can also be installed without the INF file.
 
 Copy `qemouse.drv` to the Windows `SYSTEM` directory and set:
 
     [boot]
     mouse.drv=qemouse.drv
 
-in `SYSTEM.INI`, then reboot.
+in `SYSTEM.INI`.
 
-The supplied `oemsetup.inf` can also be used with Windows Setup.
+Leave the existing `[386Enh]` `mouse=` entry unchanged, then reboot Windows.
+
+### Windows 3.x
+
+Copy `qemouse.drv` to the Windows `SYSTEM` directory and set:
+
+    [boot]
+    mouse.drv=qemouse.drv
+
+in `SYSTEM.INI`, then restart Windows.
+
+### Unattended Windows 9x installation
+
+`qemouse.inf` is intended for installation after Windows Setup has completed.
+
+When integrating QEMouse directly into Windows 9x installation media, let Windows install and configure its normal mouse stack and install the QEMouse binary under the standard name:
+
+    MOUSE.DRV
+
+in the Windows `SYSTEM` directory.
+
+Windows can then retain its normal configuration, for example on Windows 98:
+
+    [boot]
+    mouse.drv=mouse.drv
+
+    [386Enh]
+    mouse=*vmouse, msmouse.vxd
+
+while the file named `MOUSE.DRV` is the QEMouse driver.
+
+This avoids interfering with Windows Setup's own mouse-device configuration.
+
+## QEMU configuration 🖥️
+
+QEMU's VMware-compatible VMPort interface must be available to the guest.
+
+For machine types where VMPort is not enabled automatically, enable it with:
+
+    -machine vmport=on
+
+QEMouse detects the VMware-compatible backdoor and absolute-pointer interface when Windows loads the driver.
+
+If the absolute-pointer interface is unavailable, QEMouse falls back to conventional relative PS/2 mouse input.
 
 ## Building 🛠️
 
-QEMouse uses Open Watcom and the Windows headers supplied with it. After loading an Open Watcom environment, run:
+QEMouse uses Open Watcom and the Windows headers supplied with it.
+
+After loading an Open Watcom environment, run:
 
     wmake qemouse.drv
 
-To build a floppy image containing the driver and `oemsetup.inf`:
+To build a 1.44 MB floppy image containing `qemouse.drv` and `qemouse.inf`:
 
     wmake flp
 
 ## Acknowledgements 🙏
 
 Special thanks to [Javier S. Pedro](https://javispedro.com/), this project would not exist without his invaluable work.
+
+QEMouse is derived from his VBMouse/VBADOS work and uses the same fundamental PS/2 BIOS callback architecture combined with VMware-compatible absolute mouse support.
 
 ## Stars 🌟
 
