@@ -74,7 +74,7 @@ jobs:
 
           python3 -m zipfile -c qemouse.zip \
             qemouse.drv \
-            oemsetup.inf
+            qemouse.inf
 
           test -s qemouse.zip
 
