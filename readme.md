@@ -1,23 +1,26 @@
 <h1 align="center">QEMouse<br />
 <div align="center">
+<a href="https://github.com/qemus/qemouse"><img src="https://raw.githubusercontent.com/qemus/qemouse/master/.github/logo.png" title="Logo" style="max-width:100%;" width="128" /></a>
+</div>
+<div align="center">
   
 [![Build]][build_url]
 [![Version]][release_url]
 [![Size]][release_url]
 
-</div></h1>  
+</div></h1>
 
 QEMouse is a small Windows 3.x / Windows 9x mouse driver for QEMU's `vmmouse` implementation.
 
 It uses QEMU's VMware-compatible backdoor protocol to obtain absolute pointer coordinates while retaining the PS/2 interrupt path as the notification source.
 
-## Features
+## Features ✨
 
 - QEMU absolute pointer coordinates
 - Windows 386/VMD mouse type registration
 - Fullscreen/background switching through the existing INT 2F notification hook
 
-## Design
+## Design 🧩
 
 QEMU's vmmouse implementation queues each host input event as four VMware backdoor words and generates a fake PS/2 mouse event to notify the guest. The PS/2 BIOS callback is therefore used only as a wakeup mechanism when VMware
 absolute mode is active.
@@ -35,7 +38,7 @@ Draining the complete queue is intentional. QEMU can retain stale vmmouse packet
 The PS/2 callback wrapper explicitly preserves all 32-bit general registers and segment registers before calling C code. This is important on Win9x, where VMD and 32-bit display code may depend on the upper halves of 386 registers surviving
 IRQ12 callbacks.
 
-## Installation
+## Installation 📦
 
 Copy `qemouse.drv` to the Windows `SYSTEM` directory and set:
 
@@ -46,7 +49,7 @@ in `SYSTEM.INI`, then reboot.
 
 The supplied `oemsetup.inf` can also be used with Windows Setup.
 
-## Building
+## Building 🛠️
 
 QEMouse uses Open Watcom and the Windows headers supplied with it. After loading an Open Watcom environment, run:
 
