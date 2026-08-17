@@ -1,0 +1,9 @@
+OPTION MODNAME=MOUSE   # Required: USER.EXE imports mouse functions using this module name
+OPTION DESCRIPTION 'QEMouse QEMU absolute mouse driver'
+
+SEGMENT CALLBACKS FIXED SHARED      # Non-moveable segment containing the PS/2 BIOS callback
+
+EXPORT Inquire.1
+EXPORT Enable.2
+EXPORT Disable.3
+EXPORT MouseGetIntVect.4
