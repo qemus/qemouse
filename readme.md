@@ -67,5 +67,5 @@ To build a floppy image containing the driver and `oemsetup.inf`:
 [release_url]: https://github.com/qemus/qemouse/releases/
 
 [Build]: https://github.com/qemus/qemouse/actions/workflows/build.yml/badge.svg
-[Size]: https://img.shields.io/badge/size-64_KB-steelblue?style=flat&color=066da5
+[Size]: https://img.shields.io/badge/size-3_KB-steelblue?style=flat&color=066da5
 [Version]: https://img.shields.io/github/v/tag/qemus/qemouse?label=version&sort=semver&color=066da5
