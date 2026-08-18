@@ -38,6 +38,8 @@ Draining the complete queue is intentional. QEMU can retain stale vmmouse packet
 
 ## Installation 📦
 
+  You can download the [latest version](https://github.com/qemus/qemouse/releases/latest/download/qemouse.zip) from the [Releases](https://github.com/qemus/qemouse/releases) page.
+
 ### Windows 95 / 98 / ME
 
 For an existing Windows installation, place `qemouse.inf` and `qemouse.drv` in the same directory.
