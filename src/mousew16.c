@@ -34,17 +34,29 @@ static LPFN_MOUSEEVENT eventproc;
 /** Current status of the mouse driver (see MOUSEFLAGS_*). */
 static unsigned char mouseflags;
 enum {
-	MOUSEFLAGS_ENABLED        = 1 << 0,
-	MOUSEFLAGS_HAS_VMWARE     = 1 << 1,
-	MOUSEFLAGS_VMWARE_ENABLED = 1 << 2,
-	MOUSEFLAGS_HAS_WIN386     = 1 << 3,
-	MOUSEFLAGS_INT2F_HOOKED   = 1 << 4
+	MOUSEFLAGS_ENABLED          = 1 << 0,
+	MOUSEFLAGS_HAS_VMWARE       = 1 << 1,
+	MOUSEFLAGS_VMWARE_ENABLED   = 1 << 2,
+	MOUSEFLAGS_HAS_WIN386       = 1 << 3,
+	MOUSEFLAGS_INT2F_HOOKED     = 1 << 4,
+	MOUSEFLAGS_VMWARE_SUSPENDED = 1 << 5
 };
 /** Last received pressed button status (to compare and see which buttons have been pressed). */
 static unsigned char mousebtnstatus;
 /** Last absolute position, used to avoid reporting stationary button-only packets as movement. */
 static uint16_t mousex, mousey;
 static bool mouseposvalid;
+
+#if HOOK_INT2F
+enum {
+	DISPLAY_SWITCH_NONE       = 0,
+	DISPLAY_SWITCH_BACKGROUND = 1,
+	DISPLAY_SWITCH_FOREGROUND = 2
+};
+/** INT 2Fh display switch recorded for deferred handling from the PS/2 callback. */
+static volatile unsigned char display_switch_pending;
+#endif
+
 /** Existing interrupt2f handler. */
 static LPFN prev_int2f_handler;
 
@@ -190,7 +202,44 @@ static void ps2_mouse_handler(uint16_t status, uint16_t x, uint16_t y, uint16_t 
 		return;
 	}
 
-	if (mouseflags & MOUSEFLAGS_VMWARE_ENABLED) {
+#if HOOK_INT2F
+	/* Win95 may deliver INT 2Fh display-switch notifications while its VM state
+	 * is in transition. Do not perform VMPort I/O from that interrupt context.
+	 * The hook only records the newest requested state; service it here, where
+	 * QEMouse already performs VMware backdoor I/O for mouse events. */
+	if (display_switch_pending == DISPLAY_SWITCH_BACKGROUND) {
+		display_switch_pending = DISPLAY_SWITCH_NONE;
+
+		if ((mouseflags & MOUSEFLAGS_VMWARE_ENABLED)
+		        && !(mouseflags & MOUSEFLAGS_VMWARE_SUSPENDED)) {
+			/* Drop the notification packet that brought us here. Once vmmouse is
+			 * disabled, following host events use the normal relative PS/2 path
+			 * needed by DOS sessions. */
+			vmware_disable_absolute();
+			mouseflags |= MOUSEFLAGS_VMWARE_SUSPENDED;
+			return;
+		}
+	} else if (display_switch_pending == DISPLAY_SWITCH_FOREGROUND) {
+		display_switch_pending = DISPLAY_SWITCH_NONE;
+
+		if ((mouseflags & MOUSEFLAGS_HAS_VMWARE)
+		        && ((mouseflags & MOUSEFLAGS_VMWARE_SUSPENDED)
+		            || !(mouseflags & MOUSEFLAGS_VMWARE_ENABLED))) {
+			/* Re-probe the complete backdoor path after returning from a DOS VM.
+			 * Drop this first relative packet on success so Windows never sees a
+			 * relative movement while it believes this driver is absolute. */
+			if (vmware_try_enable_absolute()) {
+				mouseflags &= ~MOUSEFLAGS_VMWARE_SUSPENDED;
+				return;
+			}
+
+			mouseflags &= ~(MOUSEFLAGS_VMWARE_ENABLED | MOUSEFLAGS_VMWARE_SUSPENDED);
+		}
+	}
+#endif
+
+	if ((mouseflags & MOUSEFLAGS_VMWARE_ENABLED)
+	        && !(mouseflags & MOUSEFLAGS_VMWARE_SUSPENDED)) {
 		/* Drain all complete VMware packets. QEMU queues one 4-word packet per
 		 * host input event, while the fake PS/2 notification can be lost. Reading
 		 * the entire queue prevents a permanent stale-event backlog. */
@@ -288,28 +337,11 @@ static void __declspec(naked) __far ps2_mouse_callback(void)
 
 #if HOOK_INT2F
 
-static void display_switch_handler(int function)
-#pragma aux display_switch_handler parm caller [ax] modify [ax bx cx dx si di]
-{
-	if (!(mouseflags & MOUSEFLAGS_ENABLED) || !(mouseflags & MOUSEFLAGS_VMWARE_ENABLED)) {
-		return;
-	}
-
-	switch (function) {
-	case INT2F_NOTIFY_BACKGROUND_SWITCH:
-		/* Keep the integration flag set: foreground notification must know
-		 * that it should re-enable the backdoor interface. */
-		vmware_disable_absolute();
-		break;
-	case INT2F_NOTIFY_FOREGROUND_SWITCH:
-		if (!vmware_enable_absolute()) {
-			mouseflags &= ~MOUSEFLAGS_VMWARE_ENABLED;
-		}
-		break;
-	}
-}
-
-/** Interrupt 2F handler, called on Windows 386-mode display switches. */
+/** Interrupt 2F handler, called on Windows 386-mode display switches.
+ * Keep this path deliberately minimal: Win95 can freeze if VMware backdoor
+ * traffic is issued while the VDM/display switch itself is in progress.
+ * Record only the newest direction and let the PS/2 callback perform the
+ * actual vmmouse transition later. */
 static void __declspec(naked) __far int2f_handler(void)
 {
 	_asm {
@@ -324,23 +356,19 @@ static void __declspec(naked) __far int2f_handler(void)
 
 		; Check functions we are interested in hooking
 		cmp ax, 0x4001  ; Notify Background Switch
-		je handle_it
+		je going_background
 		cmp ax, 0x4002  ; Notify Foreground Switch
-		je handle_it
+		je going_foreground
 
 		; Otherwise directly jump to next handler
 		jmp next_handler
 
-	handle_it:
-		pushad ; Save and restore 32-bit registers, we may clobber them from C
-		push es
-		push fs
-		push gs
-		call display_switch_handler
-		pop gs
-		pop fs
-		pop es
-		popad
+	going_background:
+		mov byte ptr [display_switch_pending], 1
+		jmp next_handler
+
+	going_foreground:
+		mov byte ptr [display_switch_pending], 2
 
 	next_handler:
 		; Store the address of the previous handler
@@ -443,7 +471,12 @@ VOID FAR PASCAL Enable(LPFN_MOUSEEVENT lpEventProc)
 
 		mousebtnstatus = 0;
 		mouseposvalid = false;
+		mouseflags &= ~MOUSEFLAGS_VMWARE_SUSPENDED;
 		mouseflags |= MOUSEFLAGS_ENABLED;
+
+#if HOOK_INT2F
+		display_switch_pending = DISPLAY_SWITCH_NONE;
+#endif
 
 		/* PS/2 initialization/reset can disable the vmmouse interface. Retry
 		 * GETVERSION here even if an earlier probe succeeded, then enable the
@@ -472,12 +505,16 @@ VOID FAR PASCAL Disable(VOID)
 			sti();
 			mouseflags &= ~MOUSEFLAGS_INT2F_HOOKED;
 		}
+		display_switch_pending = DISPLAY_SWITCH_NONE;
 #endif
 
 		if (mouseflags & MOUSEFLAGS_VMWARE_ENABLED) {
-			vmware_disable_absolute();
+			if (!(mouseflags & MOUSEFLAGS_VMWARE_SUSPENDED)) {
+				vmware_disable_absolute();
+			}
 			mouseflags &= ~MOUSEFLAGS_VMWARE_ENABLED;
 		}
+		mouseflags &= ~MOUSEFLAGS_VMWARE_SUSPENDED;
 
 		ps2m_enable(false);
 		ps2m_set_callback(NULL);
