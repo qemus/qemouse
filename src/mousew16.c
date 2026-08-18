@@ -39,7 +39,8 @@ enum {
 	MOUSEFLAGS_VMWARE_ENABLED   = 1 << 2,
 	MOUSEFLAGS_HAS_WIN386       = 1 << 3,
 	MOUSEFLAGS_INT2F_HOOKED     = 1 << 4,
-	MOUSEFLAGS_VMWARE_SUSPENDED = 1 << 5
+	MOUSEFLAGS_VMWARE_SUSPENDED = 1 << 5,
+	MOUSEFLAGS_VMWARE_RECOVERY  = 1 << 6
 };
 /** Last received pressed button status (to compare and see which buttons have been pressed). */
 static unsigned char mousebtnstatus;
@@ -69,6 +70,11 @@ static void send_event(unsigned short Status, short deltaX, short deltaY, short 
 /* VMware/QEMU absolute mouse helpers. */
 
 #pragma code_seg ( "CALLBACKS" )
+
+static bool __far vmware_backdoor_detect(void)
+{
+	return vmware_get_version() >= 0;
+}
 
 static bool __far vmware_detect(void)
 {
@@ -117,6 +123,13 @@ static bool __far vmware_enable_absolute(void)
  * because the mouse stack may have changed the backdoor state in the meantime. */
 static bool __far vmware_try_enable_absolute(void)
 {
+	/* Preserve the proven multi-register packet path unless this driver instance
+	 * has already encountered the late/failed vmmouse path. Only recovery mode
+	 * forces packet reads through EAX. */
+	if (mouseflags & MOUSEFLAGS_VMWARE_RECOVERY) {
+		vmware_force_eax_only_data_reads();
+	}
+
 	if (vmware_get_version() < 0) {
 		return false;
 	}
@@ -212,7 +225,7 @@ static void ps2_mouse_handler(uint16_t status, uint16_t x, uint16_t y, uint16_t 
 	if (display_switch_pending == DISPLAY_SWITCH_BACKGROUND) {
 		display_switch_pending = DISPLAY_SWITCH_NONE;
 
-		if ((mouseflags & MOUSEFLAGS_HAS_VMWARE)
+		if ((mouseflags & (MOUSEFLAGS_HAS_VMWARE | MOUSEFLAGS_VMWARE_RECOVERY))
 		        && !(mouseflags & MOUSEFLAGS_VMWARE_SUSPENDED)) {
 			/* Mark the DOS VM first so the startup-recovery path below cannot turn
 			 * absolute mode back on while DOS owns the mouse. If vmmouse is active,
@@ -226,7 +239,7 @@ static void ps2_mouse_handler(uint16_t status, uint16_t x, uint16_t y, uint16_t 
 	} else if (display_switch_pending == DISPLAY_SWITCH_FOREGROUND) {
 		display_switch_pending = DISPLAY_SWITCH_NONE;
 
-		if ((mouseflags & MOUSEFLAGS_HAS_VMWARE)
+		if ((mouseflags & (MOUSEFLAGS_HAS_VMWARE | MOUSEFLAGS_VMWARE_RECOVERY))
 		        && ((mouseflags & MOUSEFLAGS_VMWARE_SUSPENDED)
 		            || !(mouseflags & MOUSEFLAGS_VMWARE_ENABLED))) {
 			/* Windows is absolute again. Clear the DOS state before retrying, but
@@ -245,7 +258,7 @@ static void ps2_mouse_handler(uint16_t status, uint16_t x, uint16_t y, uint16_t 
 	 * retry from subsequent mouse callbacks and swallow the triggering relative
 	 * packet until absolute mode is live. Never feed relative coordinates to
 	 * Windows while it believes this driver is absolute. */
-	if ((mouseflags & MOUSEFLAGS_HAS_VMWARE)
+	if ((mouseflags & (MOUSEFLAGS_HAS_VMWARE | MOUSEFLAGS_VMWARE_RECOVERY))
 	        && !(mouseflags & MOUSEFLAGS_VMWARE_SUSPENDED)
 	        && !(mouseflags & MOUSEFLAGS_VMWARE_ENABLED)) {
 		vmware_try_enable_absolute();
@@ -279,6 +292,9 @@ static void ps2_mouse_handler(uint16_t status, uint16_t x, uint16_t y, uint16_t 
 			 * driver. If re-arming fails, the callback-level recovery path retries on
 			 * following PS/2 events. */
 			if (vmw.status & VMWARE_ABSPOINTER_STATUS_RELATIVE) {
+				/* An unexpected relative packet is an abnormal runtime recovery.
+				 * Keep the normal packet path untouched unless this actually happens. */
+				mouseflags |= MOUSEFLAGS_VMWARE_RECOVERY;
 				mouseflags &= ~MOUSEFLAGS_VMWARE_ENABLED;
 				vmware_try_enable_absolute();
 				return;
@@ -458,7 +474,19 @@ WORD FAR PASCAL Inquire(LPMOUSEINFO lpMouseInfo)
 	}
 
 	lpMouseInfo->msExist = 1;
-	lpMouseInfo->msRelative = mouseflags & MOUSEFLAGS_HAS_VMWARE ? 0 : 1;
+	if (mouseflags & MOUSEFLAGS_HAS_VMWARE) {
+		/* Normal proven path: unchanged. */
+		lpMouseInfo->msRelative = 0;
+	} else if (vmware_backdoor_detect()) {
+		/* VMPort exists but the absolute-pointer probe was not usable yet.
+		 * Keep Windows' mouse contract absolute and restrict the safer EAX-only
+		 * packet path to this abnormal late-recovery driver instance. */
+		mouseflags |= MOUSEFLAGS_VMWARE_RECOVERY;
+		lpMouseInfo->msRelative = 0;
+	} else {
+		/* No VMware backdoor at all: retain the original relative PS/2 fallback. */
+		lpMouseInfo->msRelative = 1;
+	}
 	lpMouseInfo->msNumButtons = MOUSE_NUM_BUTTONS;
 	lpMouseInfo->msRate = 40;
 	return sizeof(MOUSEINFO);
@@ -507,13 +535,20 @@ VOID FAR PASCAL Enable(LPFN_MOUSEEVENT lpEventProc)
 		/* PS/2 initialization/reset can disable the vmmouse interface. Retry
 		 * GETVERSION here even if an earlier probe succeeded, then enable the
 		 * VMware-compatible absolute protocol. */
-		vmware_try_enable_absolute();
+		if (!vmware_try_enable_absolute()
+		        && (mouseflags & (MOUSEFLAGS_HAS_VMWARE | MOUSEFLAGS_VMWARE_RECOVERY))) {
+			/* Do not alter the working path when this succeeds. A failed post-PS/2
+			 * enable is the abnormal condition that opts this instance into the
+			 * safer EAX-only packet path on the next recovery attempt. */
+			mouseflags |= MOUSEFLAGS_VMWARE_RECOVERY;
+		}
 
 #if HOOK_INT2F
 		/* Hook DOS/display switching once the absolute interface has been detected,
 		 * even if the first post-PS/2 absolute enable attempt was temporarily lost.
 		 * The hook itself only records state and performs no VMPort I/O. */
-		if ((mouseflags & MOUSEFLAGS_HAS_WIN386) && (mouseflags & MOUSEFLAGS_HAS_VMWARE)) {
+		if ((mouseflags & MOUSEFLAGS_HAS_WIN386)
+		        && (mouseflags & (MOUSEFLAGS_HAS_VMWARE | MOUSEFLAGS_VMWARE_RECOVERY))) {
 			cli();
 			hook_int2f(&prev_int2f_handler, int2f_handler);
 			sti();
