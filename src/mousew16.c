@@ -34,29 +34,17 @@ static LPFN_MOUSEEVENT eventproc;
 /** Current status of the mouse driver (see MOUSEFLAGS_*). */
 static unsigned char mouseflags;
 enum {
-	MOUSEFLAGS_ENABLED          = 1 << 0,
-	MOUSEFLAGS_HAS_VMWARE       = 1 << 1,
-	MOUSEFLAGS_VMWARE_ENABLED   = 1 << 2,
-	MOUSEFLAGS_HAS_WIN386       = 1 << 3,
-	MOUSEFLAGS_INT2F_HOOKED     = 1 << 4,
-	MOUSEFLAGS_VMWARE_SUSPENDED = 1 << 5,
-	MOUSEFLAGS_WINDOWS_ABSOLUTE = 1 << 6
+	MOUSEFLAGS_ENABLED        = 1 << 0,
+	MOUSEFLAGS_HAS_VMWARE     = 1 << 1,
+	MOUSEFLAGS_VMWARE_ENABLED = 1 << 2,
+	MOUSEFLAGS_HAS_WIN386     = 1 << 3,
+	MOUSEFLAGS_INT2F_HOOKED   = 1 << 4
 };
 /** Last received pressed button status (to compare and see which buttons have been pressed). */
 static unsigned char mousebtnstatus;
 /** Last absolute position, used to avoid reporting stationary button-only packets as movement. */
 static uint16_t mousex, mousey;
 static bool mouseposvalid;
-
-#if HOOK_INT2F
-enum {
-	DISPLAY_SWITCH_NONE       = 0,
-	DISPLAY_SWITCH_FOREGROUND = 1
-};
-/** Foreground restore recorded for deferred handling from the PS/2 callback. */
-static volatile unsigned char display_switch_pending;
-#endif
-
 /** Existing interrupt2f handler. */
 static LPFN prev_int2f_handler;
 
@@ -142,7 +130,14 @@ static void report_vmware_event(const struct vmware_abspointer_data __far *vmw)
 	short sx, sy;
 	unsigned char status = 0;
 
-	{
+	if (vmw->status & VMWARE_ABSPOINTER_STATUS_RELATIVE) {
+		sx = (int16_t) vmw->x;
+		sy = (int16_t) vmw->y;
+		mouseposvalid = false;
+		if (sx || sy) {
+			sstatus |= SF_MOVEMENT;
+		}
+	} else {
 		uint16_t x = (uint16_t) vmw->x;
 		uint16_t y = (uint16_t) vmw->y;
 
@@ -195,29 +190,7 @@ static void ps2_mouse_handler(uint16_t status, uint16_t x, uint16_t y, uint16_t 
 		return;
 	}
 
-#if HOOK_INT2F
-	/* The background handoff is completed directly by the INT 2Fh hook so QEMU
-	 * releases the vmmouse input handler before the DOS VM takes focus. Restoring
-	 * absolute mode can be deferred safely until Windows is foreground again:
-	 * with vmmouse disabled, the normal PS/2 path generates this callback. */
-	if (display_switch_pending == DISPLAY_SWITCH_FOREGROUND) {
-		display_switch_pending = DISPLAY_SWITCH_NONE;
-
-		if ((mouseflags & MOUSEFLAGS_HAS_VMWARE)
-		        && (mouseflags & MOUSEFLAGS_VMWARE_SUSPENDED)) {
-			/* Drop the first relative PS/2 packet after returning to Windows. */
-			if (vmware_try_enable_absolute()) {
-				mouseflags &= ~MOUSEFLAGS_VMWARE_SUSPENDED;
-				return;
-			}
-
-			mouseflags &= ~(MOUSEFLAGS_VMWARE_ENABLED | MOUSEFLAGS_VMWARE_SUSPENDED);
-		}
-	}
-#endif
-
-	if ((mouseflags & MOUSEFLAGS_VMWARE_ENABLED)
-	        && !(mouseflags & MOUSEFLAGS_VMWARE_SUSPENDED)) {
+	if (mouseflags & MOUSEFLAGS_VMWARE_ENABLED) {
 		/* Drain all complete VMware packets. QEMU queues one 4-word packet per
 		 * host input event, while the fake PS/2 notification can be lost. Reading
 		 * the entire queue prevents a permanent stale-event backlog. */
@@ -236,30 +209,11 @@ static void ps2_mouse_handler(uint16_t status, uint16_t x, uint16_t y, uint16_t 
 			}
 
 			vmware_abspointer_data(VMWARE_ABSPOINTER_DATA_PACKET_SIZE, &vmw);
-
-			/* Inquire() has committed this driver instance to absolute events.
-			 * If QEMU says the packet is relative, the host and driver state have
-			 * diverged. Stop using the vmmouse path rather than ever reporting a
-			 * relative packet through an absolute Windows mouse driver. */
-			if (vmw.status & VMWARE_ABSPOINTER_STATUS_RELATIVE) {
-				mouseflags &= ~MOUSEFLAGS_VMWARE_ENABLED;
-				mouseposvalid = false;
-				return;
-			}
-
 			report_vmware_event(&vmw);
 		}
 	}
 
-	/* The mode returned by Inquire() is a contract with Windows. If this
-	 * instance advertised absolute coordinates, never fall through and report
-	 * relative PS/2 deltas because vmmouse is temporarily unavailable or
-	 * suspended for a DOS VM. */
-	if (mouseflags & MOUSEFLAGS_WINDOWS_ABSOLUTE) {
-		return;
-	}
-
-	/* Windows was advertised a relative device: retain vbmouse's plain PS/2 fallback. */
+	/* VMware backdoor unavailable: retain vbmouse's plain PS/2 fallback. */
 	{
 		int sstatus = 0;
 		short sx = status & PS2M_STATUS_X_NEG ? (short) (0xFF00 | x) : (short) x;
@@ -334,12 +288,28 @@ static void __declspec(naked) __far ps2_mouse_callback(void)
 
 #if HOOK_INT2F
 
-/** Interrupt 2F handler, called on Windows 386-mode display switches.
- *
- * Keep the background path self-contained and free of C/helper calls. Windows
- * issues 4001h before switching this VM away, so this is the last reliable
- * point at which QEMU's vmmouse handler can be released for a DOS session.
- * Foreground restore is deferred until the next ordinary PS/2 callback. */
+static void display_switch_handler(int function)
+#pragma aux display_switch_handler parm caller [ax] modify [ax bx cx dx si di]
+{
+	if (!(mouseflags & MOUSEFLAGS_ENABLED) || !(mouseflags & MOUSEFLAGS_VMWARE_ENABLED)) {
+		return;
+	}
+
+	switch (function) {
+	case INT2F_NOTIFY_BACKGROUND_SWITCH:
+		/* Keep the integration flag set: foreground notification must know
+		 * that it should re-enable the backdoor interface. */
+		vmware_disable_absolute();
+		break;
+	case INT2F_NOTIFY_FOREGROUND_SWITCH:
+		if (!vmware_enable_absolute()) {
+			mouseflags &= ~MOUSEFLAGS_VMWARE_ENABLED;
+		}
+		break;
+	}
+}
+
+/** Interrupt 2F handler, called on Windows 386-mode display switches. */
 static void __declspec(naked) __far int2f_handler(void)
 {
 	_asm {
@@ -354,50 +324,23 @@ static void __declspec(naked) __far int2f_handler(void)
 
 		; Check functions we are interested in hooking
 		cmp ax, 0x4001  ; Notify Background Switch
-		je going_background
+		je handle_it
 		cmp ax, 0x4002  ; Notify Foreground Switch
-		je going_foreground
+		je handle_it
 
 		; Otherwise directly jump to next handler
 		jmp next_handler
 
-	going_background:
-		; Cancel any stale foreground restore before this VM is switched away.
-		mov byte ptr [display_switch_pending], 0
-
-		; Only hand off input when QEMouse is enabled and vmmouse owns it.
-		test byte ptr [mouseflags], 01h
-		jz next_handler
-		test byte ptr [mouseflags], 04h
-		jz next_handler
-		test byte ptr [mouseflags], 20h
-		jnz next_handler
-
-		; Mark the handoff before touching VMPort.
-		or byte ptr [mouseflags], 20h
-		mov byte ptr [mouseposvalid], 0
-
-		; Release QEMU's vmmouse input handler without calling C code from the
-		; display-switch notification: request relative mode, then disable it.
-		pushad
-		mov eax, 564D5868h
-		mov ebx, 4C455252h
-		mov ecx, 29h
-		mov edx, 5658h
-		in eax, dx
-
-		mov eax, 564D5868h
-		mov ebx, 000000F5h
-		mov ecx, 29h
-		mov edx, 5658h
-		in eax, dx
+	handle_it:
+		pushad ; Save and restore 32-bit registers, we may clobber them from C
+		push es
+		push fs
+		push gs
+		call display_switch_handler
+		pop gs
+		pop fs
+		pop es
 		popad
-		jmp next_handler
-
-	going_foreground:
-		; A foreground notification may occur without a matching background one.
-		; Only the PS/2 callback will restore vmmouse if it was actually suspended.
-		mov byte ptr [display_switch_pending], 1
 
 	next_handler:
 		; Store the address of the previous handler
@@ -460,16 +403,8 @@ WORD FAR PASCAL Inquire(LPMOUSEINFO lpMouseInfo)
 		mouseflags |= MOUSEFLAGS_HAS_VMWARE;
 	}
 
-	/* Latch the coordinate mode Windows is about to configure for this driver
-	 * instance. Runtime detection may change later, but event semantics must not. */
-	if (mouseflags & MOUSEFLAGS_HAS_VMWARE) {
-		mouseflags |= MOUSEFLAGS_WINDOWS_ABSOLUTE;
-	} else {
-		mouseflags &= ~MOUSEFLAGS_WINDOWS_ABSOLUTE;
-	}
-
 	lpMouseInfo->msExist = 1;
-	lpMouseInfo->msRelative = mouseflags & MOUSEFLAGS_WINDOWS_ABSOLUTE ? 0 : 1;
+	lpMouseInfo->msRelative = mouseflags & MOUSEFLAGS_HAS_VMWARE ? 0 : 1;
 	lpMouseInfo->msNumButtons = MOUSE_NUM_BUTTONS;
 	lpMouseInfo->msRate = 40;
 	return sizeof(MOUSEINFO);
@@ -508,19 +443,12 @@ VOID FAR PASCAL Enable(LPFN_MOUSEEVENT lpEventProc)
 
 		mousebtnstatus = 0;
 		mouseposvalid = false;
-		mouseflags &= ~MOUSEFLAGS_VMWARE_SUSPENDED;
 		mouseflags |= MOUSEFLAGS_ENABLED;
 
-#if HOOK_INT2F
-		display_switch_pending = DISPLAY_SWITCH_NONE;
-#endif
-
-		/* Only enable vmmouse if Inquire() advertised an absolute device. If
-		 * Windows was told this instance is relative, a later successful probe
-		 * must not silently change the event coordinate semantics underneath it. */
-		if (mouseflags & MOUSEFLAGS_WINDOWS_ABSOLUTE) {
-			vmware_try_enable_absolute();
-		}
+		/* PS/2 initialization/reset can disable the vmmouse interface. Retry
+		 * GETVERSION here even if an earlier probe succeeded, then enable the
+		 * VMware-compatible absolute protocol. */
+		vmware_try_enable_absolute();
 
 #if HOOK_INT2F
 		if ((mouseflags & MOUSEFLAGS_HAS_WIN386) && (mouseflags & MOUSEFLAGS_VMWARE_ENABLED)) {
@@ -544,16 +472,12 @@ VOID FAR PASCAL Disable(VOID)
 			sti();
 			mouseflags &= ~MOUSEFLAGS_INT2F_HOOKED;
 		}
-		display_switch_pending = DISPLAY_SWITCH_NONE;
 #endif
 
 		if (mouseflags & MOUSEFLAGS_VMWARE_ENABLED) {
-			if (!(mouseflags & MOUSEFLAGS_VMWARE_SUSPENDED)) {
-				vmware_disable_absolute();
-			}
+			vmware_disable_absolute();
 			mouseflags &= ~MOUSEFLAGS_VMWARE_ENABLED;
 		}
-		mouseflags &= ~MOUSEFLAGS_VMWARE_SUSPENDED;
 
 		ps2m_enable(false);
 		ps2m_set_callback(NULL);
