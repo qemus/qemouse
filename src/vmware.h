@@ -89,15 +89,8 @@ struct vmware_abspointer_data {
  * packet reads can use only the architectural IN result in EAX.
  */
 static uint8_t vmware_eax_only_returns;
-/** Force packet payload reads through EAX after an abnormal late/recovery path. */
-static uint8_t vmware_force_eax_only_data;
 
 #pragma code_seg ( "CALLBACKS" )
-
-static void vmware_force_eax_only_data_reads(void)
-{
-	vmware_force_eax_only_data = 1;
-}
 
 static inline void vmware_call(struct vmware_call_regs __far * regs);
 #pragma aux vmware_call = \
@@ -182,9 +175,8 @@ static uint32_t vmware_abspointer_status(void)
  *     VMWARE_ABSPOINTER_STATUS_MASK_DATA bits: amount of data available to read. */
 static void vmware_abspointer_data(unsigned size, struct vmware_abspointer_data __far * data)
 {
-	if (!vmware_eax_only_returns && !vmware_force_eax_only_data) {
-		/* VMware's native path returns up to four words in EAX/EBX/ECX/EDX.
-		 * Keep this proven path unless recovery explicitly opted out of it. */
+	if (!vmware_eax_only_returns) {
+		/* VMware's native path returns up to four words in EAX/EBX/ECX/EDX. */
 		union u {
 			struct vmware_call_regs regs;
 			struct vmware_abspointer_data data;
