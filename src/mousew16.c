@@ -34,11 +34,12 @@ static LPFN_MOUSEEVENT eventproc;
 /** Current status of the mouse driver (see MOUSEFLAGS_*). */
 static unsigned char mouseflags;
 enum {
-	MOUSEFLAGS_ENABLED        = 1 << 0,
-	MOUSEFLAGS_HAS_VMWARE     = 1 << 1,
-	MOUSEFLAGS_VMWARE_ENABLED = 1 << 2,
-	MOUSEFLAGS_HAS_WIN386     = 1 << 3,
-	MOUSEFLAGS_INT2F_HOOKED   = 1 << 4
+	MOUSEFLAGS_ENABLED          = 1 << 0,
+	MOUSEFLAGS_HAS_VMWARE       = 1 << 1,
+	MOUSEFLAGS_VMWARE_ENABLED   = 1 << 2,
+	MOUSEFLAGS_HAS_WIN386       = 1 << 3,
+	MOUSEFLAGS_INT2F_HOOKED     = 1 << 4,
+	MOUSEFLAGS_WINDOWS_ABSOLUTE = 1 << 5
 };
 /** Last received pressed button status (to compare and see which buttons have been pressed). */
 static unsigned char mousebtnstatus;
@@ -209,11 +210,30 @@ static void ps2_mouse_handler(uint16_t status, uint16_t x, uint16_t y, uint16_t 
 			}
 
 			vmware_abspointer_data(VMWARE_ABSPOINTER_DATA_PACKET_SIZE, &vmw);
+
+			/* Inquire() has committed this driver instance to absolute events.
+			 * If QEMU says the packet is relative, the host and driver state have
+			 * diverged. Stop using the vmmouse path rather than ever reporting a
+			 * relative packet through an absolute Windows mouse driver. */
+			if (vmw.status & VMWARE_ABSPOINTER_STATUS_RELATIVE) {
+				mouseflags &= ~MOUSEFLAGS_VMWARE_ENABLED;
+				mouseposvalid = false;
+				return;
+			}
+
 			report_vmware_event(&vmw);
 		}
 	}
 
-	/* VMware backdoor unavailable: retain vbmouse's plain PS/2 fallback. */
+	/* The mode returned by Inquire() is a contract with Windows. If this
+	 * instance advertised absolute coordinates, never fall through and report
+	 * relative PS/2 deltas because vmmouse is temporarily unavailable or
+	 * suspended for a DOS VM. */
+	if (mouseflags & MOUSEFLAGS_WINDOWS_ABSOLUTE) {
+		return;
+	}
+
+	/* Windows was advertised a relative device: retain vbmouse's plain PS/2 fallback. */
 	{
 		int sstatus = 0;
 		short sx = status & PS2M_STATUS_X_NEG ? (short) (0xFF00 | x) : (short) x;
@@ -403,8 +423,16 @@ WORD FAR PASCAL Inquire(LPMOUSEINFO lpMouseInfo)
 		mouseflags |= MOUSEFLAGS_HAS_VMWARE;
 	}
 
+	/* Latch the coordinate mode Windows is about to configure for this driver
+	 * instance. Runtime detection may change later, but event semantics must not. */
+	if (mouseflags & MOUSEFLAGS_HAS_VMWARE) {
+		mouseflags |= MOUSEFLAGS_WINDOWS_ABSOLUTE;
+	} else {
+		mouseflags &= ~MOUSEFLAGS_WINDOWS_ABSOLUTE;
+	}
+
 	lpMouseInfo->msExist = 1;
-	lpMouseInfo->msRelative = mouseflags & MOUSEFLAGS_HAS_VMWARE ? 0 : 1;
+	lpMouseInfo->msRelative = mouseflags & MOUSEFLAGS_WINDOWS_ABSOLUTE ? 0 : 1;
 	lpMouseInfo->msNumButtons = MOUSE_NUM_BUTTONS;
 	lpMouseInfo->msRate = 40;
 	return sizeof(MOUSEINFO);
@@ -445,10 +473,12 @@ VOID FAR PASCAL Enable(LPFN_MOUSEEVENT lpEventProc)
 		mouseposvalid = false;
 		mouseflags |= MOUSEFLAGS_ENABLED;
 
-		/* PS/2 initialization/reset can disable the vmmouse interface. Retry
-		 * GETVERSION here even if an earlier probe succeeded, then enable the
-		 * VMware-compatible absolute protocol. */
-		vmware_try_enable_absolute();
+		/* Only enable vmmouse if Inquire() advertised an absolute device. If
+		 * Windows was told this instance is relative, a later successful probe
+		 * must not silently change the event coordinate semantics underneath it. */
+		if (mouseflags & MOUSEFLAGS_WINDOWS_ABSOLUTE) {
+			vmware_try_enable_absolute();
+		}
 
 #if HOOK_INT2F
 		if ((mouseflags & MOUSEFLAGS_HAS_WIN386) && (mouseflags & MOUSEFLAGS_VMWARE_ENABLED)) {
