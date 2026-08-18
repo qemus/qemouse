@@ -19,7 +19,7 @@ It uses QEMU's VMware-compatible backdoor protocol to obtain absolute pointer co
 - QEMU absolute pointer coordinates
 - Supports Windows 3.11, 95, 98 and ME
 - Windows 386/VMD mouse type registration
-- Fullscreen/background switching through the existing INT 2F notification hook
+- DOS/fullscreen mouse handoff through the Windows INT 2F display-switch notifications
 - Falls back to normal relative PS/2 input when the VMware-compatible interface is unavailable
 - Uses Windows' existing enhanced-mode mouse stack; no additional VxD is required
 
@@ -35,6 +35,8 @@ On each notification QEMouse:
 4. Converts VMware's current left/right button state into Windows button transition events.
 
 Draining the complete queue is intentional. QEMU can retain stale vmmouse packets if a fake PS/2 notification is missed; consuming all complete packets prevents the guest pointer from developing a permanent event backlog.
+
+For DOS/fullscreen switching under Windows enhanced mode, QEMouse uses the INT 2F display-switch notifications. When Windows switches a VM to the background, QEMouse releases QEMU's vmmouse input handler so the DOS session can use normal relative PS/2 input. When Windows returns to the foreground, absolute vmmouse mode is restored from the normal PS/2 callback path.
 
 ## Installation 📦
 
