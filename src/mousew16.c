@@ -28,7 +28,6 @@
 #define HOOK_INT2F 1
 
 #define MOUSE_NUM_BUTTONS 2
-#define VMWARE_FALLBACK_PROBE_INTERVAL 64
 
 /** The routine Windows gave us which we should use to report events. */
 static LPFN_MOUSEEVENT eventproc;
@@ -46,8 +45,6 @@ static unsigned char mousebtnstatus;
 /** Last absolute position, used to avoid reporting stationary button-only packets as movement. */
 static uint16_t mousex, mousey;
 static bool mouseposvalid;
-/** Throttle VMware retries while running on the relative PS/2 fallback. */
-static unsigned char fallback_probe_count;
 /** Existing interrupt2f handler. */
 static LPFN prev_int2f_handler;
 
@@ -104,9 +101,8 @@ static bool __far vmware_enable_absolute(void)
 }
 
 /* Retry the complete usable-absolute-path test at a later execution point.
- * GETVERSION is intentionally repeated here even if an earlier probe succeeded:
- * this diagnostic build is meant to determine whether WinMe makes VMPort
- * accessible only after more of the mouse/386-mode stack has initialized. */
+ * GETVERSION is intentionally repeated even if an earlier probe succeeded,
+ * because the mouse stack may have changed the backdoor state in the meantime. */
 static bool __far vmware_try_enable_absolute(void)
 {
 	if (vmware_get_version() < 0) {
@@ -225,20 +221,6 @@ static void ps2_mouse_handler(uint16_t status, uint16_t x, uint16_t y, uint16_t 
 		unsigned char buttons = (unsigned char) status;
 
 		(void) z;
-
-		/* Exhaust the timing hypothesis from a context that is known to run on
-		 * installed WinMe: the working relative PS/2 callback. Probe on the first
-		 * real movement and then only once per VMWARE_FALLBACK_PROBE_INTERVAL
-		 * movement callbacks. If VMPort becomes usable, switch to absolute mode
-		 * immediately. Do not hook INT 2Fh here: DOS vector services are not safe
-		 * to invoke from the BIOS/IRQ mouse callback. */
-		if (!(mouseflags & MOUSEFLAGS_VMWARE_ENABLED) && (sx || sy)) {
-			if ((fallback_probe_count++ & (VMWARE_FALLBACK_PROBE_INTERVAL - 1)) == 0) {
-				if (vmware_try_enable_absolute()) {
-					return;
-				}
-			}
-		}
 
 		if (sx || sy) {
 			sstatus |= SF_MOVEMENT;
@@ -416,8 +398,7 @@ BOOL FAR PASCAL LibMain(HINSTANCE hInstance, WORD wDataSegment,
 /** Called by Windows to retrieve information about the mouse hardware. */
 WORD FAR PASCAL Inquire(LPMOUSEINFO lpMouseInfo)
 {
-	/* WinMe may call us before VMPort is usable in enhanced mode. If the
-	 * LibMain probe failed, retry once from this later Windows entry point. */
+	/* If the LibMain probe failed, retry from this later Windows entry point. */
 	if (!(mouseflags & MOUSEFLAGS_HAS_VMWARE) && vmware_detect()) {
 		mouseflags |= MOUSEFLAGS_HAS_VMWARE;
 	}
@@ -462,13 +443,11 @@ VOID FAR PASCAL Enable(LPFN_MOUSEEVENT lpEventProc)
 
 		mousebtnstatus = 0;
 		mouseposvalid = false;
-		fallback_probe_count = 0;
 		mouseflags |= MOUSEFLAGS_ENABLED;
 
-		/* PS/2 initialization/reset disables QEMU's vmmouse interface. Retry
+		/* PS/2 initialization/reset can disable the vmmouse interface. Retry
 		 * GETVERSION here even if an earlier probe succeeded, then enable the
-		 * VMware-compatible absolute protocol. This is a deliberately exhaustive
-		 * timing test for WinMe's enhanced-mode startup. */
+		 * VMware-compatible absolute protocol. */
 		vmware_try_enable_absolute();
 
 #if HOOK_INT2F
@@ -502,7 +481,6 @@ VOID FAR PASCAL Disable(VOID)
 
 		ps2m_enable(false);
 		ps2m_set_callback(NULL);
-		fallback_probe_count = 0;
 		mouseflags &= ~MOUSEFLAGS_ENABLED;
 	}
 }
