@@ -142,14 +142,16 @@ static void report_vmware_event(const struct vmware_abspointer_data __far *vmw)
 	short sx, sy;
 	unsigned char status = 0;
 
+	/* Windows was told by Inquire() that this driver is absolute. Never pass a
+	 * relative VMware packet to the Windows absolute-mouse callback. The PS/2
+	 * handler normally catches this first and re-arms absolute mode; keep this
+	 * guard here as a second line of defense. */
 	if (vmw->status & VMWARE_ABSPOINTER_STATUS_RELATIVE) {
-		sx = (int16_t) vmw->x;
-		sy = (int16_t) vmw->y;
 		mouseposvalid = false;
-		if (sx || sy) {
-			sstatus |= SF_MOVEMENT;
-		}
-	} else {
+		return;
+	}
+
+	{
 		uint16_t x = (uint16_t) vmw->x;
 		uint16_t y = (uint16_t) vmw->y;
 
@@ -210,13 +212,15 @@ static void ps2_mouse_handler(uint16_t status, uint16_t x, uint16_t y, uint16_t 
 	if (display_switch_pending == DISPLAY_SWITCH_BACKGROUND) {
 		display_switch_pending = DISPLAY_SWITCH_NONE;
 
-		if ((mouseflags & MOUSEFLAGS_VMWARE_ENABLED)
+		if ((mouseflags & MOUSEFLAGS_HAS_VMWARE)
 		        && !(mouseflags & MOUSEFLAGS_VMWARE_SUSPENDED)) {
-			/* Drop the notification packet that brought us here. Once vmmouse is
-			 * disabled, following host events use the normal relative PS/2 path
-			 * needed by DOS sessions. */
-			vmware_disable_absolute();
+			/* Mark the DOS VM first so the startup-recovery path below cannot turn
+			 * absolute mode back on while DOS owns the mouse. If vmmouse is active,
+			 * disable it so following host events use the relative PS/2 path. */
 			mouseflags |= MOUSEFLAGS_VMWARE_SUSPENDED;
+			if (mouseflags & MOUSEFLAGS_VMWARE_ENABLED) {
+				vmware_disable_absolute();
+			}
 			return;
 		}
 	} else if (display_switch_pending == DISPLAY_SWITCH_FOREGROUND) {
@@ -225,18 +229,28 @@ static void ps2_mouse_handler(uint16_t status, uint16_t x, uint16_t y, uint16_t 
 		if ((mouseflags & MOUSEFLAGS_HAS_VMWARE)
 		        && ((mouseflags & MOUSEFLAGS_VMWARE_SUSPENDED)
 		            || !(mouseflags & MOUSEFLAGS_VMWARE_ENABLED))) {
-			/* Re-probe the complete backdoor path after returning from a DOS VM.
-			 * Drop this first relative packet on success so Windows never sees a
-			 * relative movement while it believes this driver is absolute. */
-			if (vmware_try_enable_absolute()) {
-				mouseflags &= ~MOUSEFLAGS_VMWARE_SUSPENDED;
-				return;
-			}
-
+			/* Windows is absolute again. Clear the DOS state before retrying, but
+			 * never let this transition packet fall through to the relative PS/2
+			 * path if vmmouse is not ready yet. */
 			mouseflags &= ~(MOUSEFLAGS_VMWARE_ENABLED | MOUSEFLAGS_VMWARE_SUSPENDED);
+			vmware_try_enable_absolute();
+			return;
 		}
 	}
 #endif
+
+	/* Inquire() advertises an absolute device as soon as the vmmouse interface
+	 * has been detected. PS/2 initialization during Enable() can temporarily
+	 * knock that interface offline on Win95. If the first enable attempt failed,
+	 * retry from subsequent mouse callbacks and swallow the triggering relative
+	 * packet until absolute mode is live. Never feed relative coordinates to
+	 * Windows while it believes this driver is absolute. */
+	if ((mouseflags & MOUSEFLAGS_HAS_VMWARE)
+	        && !(mouseflags & MOUSEFLAGS_VMWARE_SUSPENDED)
+	        && !(mouseflags & MOUSEFLAGS_VMWARE_ENABLED)) {
+		vmware_try_enable_absolute();
+		return;
+	}
 
 	if ((mouseflags & MOUSEFLAGS_VMWARE_ENABLED)
 	        && !(mouseflags & MOUSEFLAGS_VMWARE_SUSPENDED)) {
@@ -258,6 +272,18 @@ static void ps2_mouse_handler(uint16_t status, uint16_t x, uint16_t y, uint16_t 
 			}
 
 			vmware_abspointer_data(VMWARE_ABSPOINTER_DATA_PACKET_SIZE, &vmw);
+
+			/* QEMU marks a packet relative if the vmmouse device has unexpectedly
+			 * left absolute mode. Re-arm the interface immediately and discard this
+			 * packet rather than applying relative coordinates to an absolute Windows
+			 * driver. If re-arming fails, the callback-level recovery path retries on
+			 * following PS/2 events. */
+			if (vmw.status & VMWARE_ABSPOINTER_STATUS_RELATIVE) {
+				mouseflags &= ~MOUSEFLAGS_VMWARE_ENABLED;
+				vmware_try_enable_absolute();
+				return;
+			}
+
 			report_vmware_event(&vmw);
 		}
 	}
@@ -484,7 +510,10 @@ VOID FAR PASCAL Enable(LPFN_MOUSEEVENT lpEventProc)
 		vmware_try_enable_absolute();
 
 #if HOOK_INT2F
-		if ((mouseflags & MOUSEFLAGS_HAS_WIN386) && (mouseflags & MOUSEFLAGS_VMWARE_ENABLED)) {
+		/* Hook DOS/display switching once the absolute interface has been detected,
+		 * even if the first post-PS/2 absolute enable attempt was temporarily lost.
+		 * The hook itself only records state and performs no VMPort I/O. */
+		if ((mouseflags & MOUSEFLAGS_HAS_WIN386) && (mouseflags & MOUSEFLAGS_HAS_VMWARE)) {
 			cli();
 			hook_int2f(&prev_int2f_handler, int2f_handler);
 			sti();
